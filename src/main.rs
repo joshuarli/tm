@@ -19,7 +19,7 @@ mod sys;
 mod tty;
 mod vt;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -41,14 +41,14 @@ fn main() -> Result<()> {
         }
         Some("attach" | "a") => {
             let session_name = parse_session_name(&args, 2);
-            client::run_client(protocol::MSG_ATTACH, &session_name)
+            connect_or_fail(protocol::MSG_ATTACH, &session_name)
         }
         Some("ls" | "list") => {
-            client::run_client(protocol::MSG_LIST, "")
+            connect_or_fail(protocol::MSG_LIST, "")
         }
         Some("kill") => {
             let session_name = parse_session_name(&args, 2);
-            client::run_client(protocol::MSG_KILL_SESSION, &session_name)
+            connect_or_fail(protocol::MSG_KILL_SESSION, &session_name)
         }
         Some(other) => {
             bail!("unknown command: {other}\n\nUsage:\n  tm new [-s NAME]\n  tm attach [-t NAME]\n  tm ls\n  tm kill [-t NAME]");
@@ -74,10 +74,18 @@ fn parse_session_name(args: &[String], start: usize) -> String {
     String::new()
 }
 
+/// Connect to an existing server. Fails if no server is running.
+fn connect_or_fail(msg_type: u16, session_name: &str) -> Result<()> {
+    client::run_client(msg_type, session_name)
+}
+
+/// Connect to existing server, or fork a new one.
+/// Uses a socketpair so the initial client and server can communicate
+/// immediately — no startup race condition.
 fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
     let socket_path = protocol::socket_path();
 
-    // If server socket exists, try to use it directly — no probe connection
+    // If server socket exists, try to use it directly
     if socket_path.exists() {
         match client::run_client(msg_type, session_name) {
             Ok(()) => return Ok(()),
@@ -88,7 +96,13 @@ fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
         }
     }
 
-    // Fork: child becomes server, parent becomes client
+    // Create a socketpair — one end for the parent (client), one for the child (server).
+    // This eliminates the race between server bind and client connect.
+    let mut pair = [0i32; 2];
+    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, pair.as_mut_ptr()) } != 0 {
+        bail!("socketpair failed: {}", std::io::Error::last_os_error());
+    }
+
     // SAFETY: fork is safe here before we've spawned any threads.
     let pid = unsafe { libc::fork() };
     if pid < 0 {
@@ -97,8 +111,10 @@ fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
 
     if pid == 0 {
         // Child — become server
-        // Redirect stdin/stdout/stderr to /dev/null, but do NOT setsid —
-        // the server needs the controlling terminal to write to client tty fds.
+        let server_end = pair[1];
+        sys::close_fd(pair[0]); // close parent's end
+
+        // Redirect stdin/stdout/stderr to /dev/null
         unsafe {
             let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
             if devnull >= 0 {
@@ -113,25 +129,16 @@ fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
 
         crate::log::init();
 
-        match server::run_server() {
-            Ok(()) => {}
-            Err(e) => {
-                let msg = format!("server error: {e:#}");
-                crate::log::_log(&msg);
-                let crash_path = socket_path.with_file_name("crash.log");
-                let _ = std::fs::write(&crash_path, msg.as_bytes());
-            }
+        // Pass the socketpair fd to the server — it becomes the first client connection
+        if let Err(e) = server::run_server_with_client(server_end) {
+            crate::log::_log(&format!("server error: {e:#}"));
         }
         std::process::exit(0);
     }
 
-    // Parent — wait for server socket to appear
-    for _ in 0..200 {
-        if socket_path.exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
+    // Parent — become client using the socketpair
+    let client_end = pair[0];
+    sys::close_fd(pair[1]); // close child's end
 
-    client::run_client(msg_type, session_name)
+    client::run_client_on_fd(msg_type, session_name, client_end)
 }

@@ -27,7 +27,17 @@ fn pane_token(id: PaneId) -> Token {
     Token(100000 + id.0 as usize)
 }
 
-pub(crate) fn run_server() -> Result<()> {
+/// Start server with an initial client connected via socketpair.
+pub(crate) fn run_server_with_client(initial_client_fd: RawFd) -> Result<()> {
+    run_server_inner(Some(initial_client_fd))
+}
+
+/// Start server (for future use — no initial client).
+pub(crate) fn _run_server() -> Result<()> {
+    run_server_inner(None)
+}
+
+fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
     crate::log::init();
 
     sys::ignore_sigpipe();
@@ -41,7 +51,7 @@ pub(crate) fn run_server() -> Result<()> {
     // Remove stale socket
     let _ = std::fs::remove_file(&socket_path);
 
-    // Bind Unix socket listener
+    // Bind Unix socket listener for subsequent clients
     let listener = std::os::unix::net::UnixListener::bind(&socket_path)
         .with_context(|| format!("binding {}", socket_path.display()))?;
     listener.set_nonblocking(true)?;
@@ -50,14 +60,11 @@ pub(crate) fn run_server() -> Result<()> {
         listener.as_raw_fd()
     };
 
-    // Set up signal pipes
     let sigchld_fd = sys::signal_pipe(libc::SIGCHLD).context("setting up SIGCHLD handler")?;
     let sigterm_fd = sys::signal_pipe(libc::SIGTERM).context("setting up SIGTERM handler")?;
 
-    // Load config
     let mut config = Config::load();
 
-    // Set up mio
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(256);
 
@@ -80,14 +87,19 @@ pub(crate) fn run_server() -> Result<()> {
     let mut state = State::new();
     let mut tty = TtyWriter::new();
 
-    // Map from mio Token to entity
     let mut client_tokens: HashMap<Token, ClientId> = HashMap::new();
     let mut pane_tokens: HashMap<Token, PaneId> = HashMap::new();
+
+    // Register the initial client from the socketpair (if any).
+    // This client is already connected — no accept needed.
+    if let Some(sock_fd) = initial_client_fd {
+        register_new_connection(sock_fd, &mut state, &mut poll, &mut client_tokens)?;
+    }
 
     let tick_interval = Duration::from_millis(16);
     let mut last_render = Instant::now();
     let mut needs_render = false;
-    let mut had_session = false; // only exit after we've had at least one session
+    let mut had_session = false;
     loop {
         let timeout = if needs_render {
             let since = last_render.elapsed();
@@ -140,7 +152,7 @@ pub(crate) fn run_server() -> Result<()> {
         for event in events.iter() {
             match event.token() {
                 TOKEN_LISTENER => {
-                    // Accept new connections
+                    // Accept new connections from the listening socket
                     loop {
                         let stream = match listener.accept() {
                             Ok((s, _)) => s,
@@ -151,43 +163,13 @@ pub(crate) fn run_server() -> Result<()> {
                             use std::os::unix::io::AsRawFd;
                             stream.as_raw_fd()
                         };
+                        std::mem::forget(stream); // prevent close on drop
 
-                        // Receive the client's tty fd (blocking — before setting nonblock)
-                        // Returns None for non-interactive clients (ls, kill)
-                        let tty_fd = match protocol::recv_fd(sock_fd) {
-                            Ok(Some(fd)) => fd,
-                            Ok(None) => -1, // non-interactive, no tty
-                            Err(_) => continue, // stream drops and closes sock_fd
-                        };
-                        // Now set non-blocking for the event loop
-                        sys::set_nonblock(sock_fd).ok();
-
-                        // Allocate client ID and register
-                        let cid = state.alloc_client_id();
-                        let token = client_token(cid);
-
-                        // We need to keep the stream alive (don't drop it which closes fd)
-                        std::mem::forget(stream);
-
-                        poll.registry()
-                            .register(
-                                &mut SourceFd(&sock_fd),
-                                token,
-                                Interest::READABLE,
-                            )
-                            .ok();
-
-                        // Store temporary client — will be fully initialized on MSG_IDENTIFY
-                        let client = crate::state::Client::new(
-                            cid,
-                            sock_fd,
-                            tty_fd,
-                            80,
-                            24,
-                            crate::state::SessionId(u32::MAX),
-                        );
-                        state.clients.insert(cid, client);
-                        client_tokens.insert(token, cid);
+                        if register_new_connection(
+                            sock_fd, &mut state, &mut poll, &mut client_tokens,
+                        ).is_err() {
+                            sys::close_fd(sock_fd);
+                        }
                     }
                 }
                 TOKEN_SIGCHLD => {
@@ -292,6 +274,44 @@ pub(crate) fn run_server() -> Result<()> {
             }
         }
     }
+}
+
+/// Handle a new client connection: receive optional tty fd, register with mio.
+fn register_new_connection(
+    sock_fd: RawFd,
+    state: &mut State,
+    poll: &mut Poll,
+    client_tokens: &mut HashMap<Token, ClientId>,
+) -> Result<()> {
+    // Receive the client's tty fd (blocking — before setting nonblock).
+    // Returns None for non-interactive clients (ls, kill).
+    let tty_fd = match protocol::recv_fd(sock_fd)? {
+        Some(fd) => fd,
+        None => -1,
+    };
+
+    sys::set_nonblock(sock_fd)?;
+
+    let cid = state.alloc_client_id();
+    let token = client_token(cid);
+
+    poll.registry().register(
+        &mut SourceFd(&sock_fd),
+        token,
+        Interest::READABLE,
+    )?;
+
+    let client = crate::state::Client::new(
+        cid,
+        sock_fd,
+        tty_fd,
+        80,
+        24,
+        crate::state::SessionId(u32::MAX),
+    );
+    state.clients.insert(cid, client);
+    client_tokens.insert(token, cid);
+    Ok(())
 }
 
 fn drain_signal_pipe(fd: RawFd) {

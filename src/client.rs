@@ -13,28 +13,44 @@ const TOKEN_SOCKET: Token = Token(0);
 const TOKEN_TTY: Token = Token(1);
 const TOKEN_SIGWINCH: Token = Token(2);
 
+/// Connect to the server via Unix socket and run the client.
 pub(crate) fn run_client(
     msg_type: u16,
     session_name: &str,
 ) -> Result<()> {
     let socket_path = protocol::socket_path();
-
-    // Connect to server
     let stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("connecting to {}", socket_path.display()))?;
     let sock_fd = {
         use std::os::unix::io::AsRawFd;
         stream.as_raw_fd()
     };
+    // `stream` must live until we're done with sock_fd
+    let result = run_client_inner(msg_type, session_name, sock_fd);
+    drop(stream);
+    result
+}
 
+/// Run the client on a pre-connected fd (from socketpair during server startup).
+pub(crate) fn run_client_on_fd(
+    msg_type: u16,
+    session_name: &str,
+    sock_fd: RawFd,
+) -> Result<()> {
+    run_client_inner(msg_type, session_name, sock_fd)
+}
+
+fn run_client_inner(
+    msg_type: u16,
+    session_name: &str,
+    sock_fd: RawFd,
+) -> Result<()> {
     let needs_tty = msg_type != protocol::MSG_LIST && msg_type != protocol::MSG_KILL_SESSION;
 
     if needs_tty {
-        // Interactive session — send tty fd for server-side rendering
         let tty_fd = open_tty().context("opening /dev/tty")?;
         protocol::send_fd(sock_fd, tty_fd).context("sending tty fd to server")?;
     } else {
-        // Non-interactive — send a dummy byte instead of fd so server can proceed
         send_blocking(sock_fd, &[0u8]).context("sending handshake")?;
     }
 
@@ -49,7 +65,6 @@ pub(crate) fn run_client(
     let msg = Message::new(msg_type, payload);
     send_blocking(sock_fd, &msg.encode()).context("sending identify message")?;
 
-    // For list/kill, read response and exit
     if !needs_tty {
         return if msg_type == protocol::MSG_LIST {
             handle_list_response(sock_fd)
@@ -58,17 +73,12 @@ pub(crate) fn run_client(
         };
     }
 
-    // Now set non-blocking for the event loop
     sys::set_nonblock(sock_fd).context("set socket nonblock")?;
     sys::set_nonblock(input_fd).context("set stdin nonblock")?;
 
-    // Enter raw mode on stdin
     let saved_termios = enter_raw_mode(input_fd).context("entering raw mode")?;
-
-    // Set up signal handling for SIGWINCH
     let sigwinch_fd = sys::signal_pipe(libc::SIGWINCH).context("setting up SIGWINCH")?;
 
-    // Set up mio event loop
     let mut poll = Poll::new().context("creating poll")?;
     let mut events = Events::with_capacity(64);
 
@@ -90,9 +100,7 @@ pub(crate) fn run_client(
 
     let result = client_loop(&mut poll, &mut events, sock_fd, input_fd, sigwinch_fd);
 
-    // Restore terminal — MUST restore blocking mode on stdin
     restore_terminal(input_fd, &saved_termios);
-    // Clear nonblock on stdin so the parent shell isn't broken
     let flags = unsafe { libc::fcntl(input_fd, libc::F_GETFL) };
     if flags >= 0 {
         unsafe { libc::fcntl(input_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
