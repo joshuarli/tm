@@ -27,27 +27,35 @@ pub(crate) fn run_client(
         stream.as_raw_fd()
     };
 
-    // Use stdin for input (it's the tty, and kqueue supports it).
-    // Open /dev/tty separately for winsize and to pass to the server —
-    // the server writes output directly to this fd.
-    let tty_fd = open_tty().context("opening /dev/tty")?;
+    let needs_tty = msg_type != protocol::MSG_LIST && msg_type != protocol::MSG_KILL_SESSION;
+
+    if needs_tty {
+        // Interactive session — send tty fd for server-side rendering
+        let tty_fd = open_tty().context("opening /dev/tty")?;
+        protocol::send_fd(sock_fd, tty_fd).context("sending tty fd to server")?;
+    } else {
+        // Non-interactive — send a dummy byte instead of fd so server can proceed
+        send_blocking(sock_fd, &[0u8]).context("sending handshake")?;
+    }
+
     let input_fd: RawFd = libc::STDIN_FILENO;
-    let (sx, sy) = sys::get_winsize(input_fd).context("getting terminal size")?;
+    let (sx, sy) = if needs_tty {
+        sys::get_winsize(input_fd).context("getting terminal size")?
+    } else {
+        (0, 0)
+    };
 
-    // Send the tty fd to the server for rendering
-    protocol::send_fd(sock_fd, tty_fd).context("sending tty fd to server")?;
-
-    // Send identify message
     let payload = protocol::encode_identify(session_name, sx, sy);
     let msg = Message::new(msg_type, payload);
     send_blocking(sock_fd, &msg.encode()).context("sending identify message")?;
 
-    // For list/kill commands, read the response in blocking mode and exit
-    if msg_type == protocol::MSG_LIST {
-        return handle_list_response(sock_fd);
-    }
-    if msg_type == protocol::MSG_KILL_SESSION {
-        return handle_kill_response(sock_fd);
+    // For list/kill, read response and exit
+    if !needs_tty {
+        return if msg_type == protocol::MSG_LIST {
+            handle_list_response(sock_fd)
+        } else {
+            handle_kill_response(sock_fd)
+        };
     }
 
     // Now set non-blocking for the event loop

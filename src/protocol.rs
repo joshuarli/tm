@@ -154,8 +154,9 @@ pub(crate) fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
-/// Receive a file descriptor from a Unix socket using SCM_RIGHTS.
-pub(crate) fn recv_fd(sock: RawFd) -> io::Result<RawFd> {
+/// Receive an optional file descriptor from a Unix socket using SCM_RIGHTS.
+/// Returns Ok(Some(fd)) if an fd was sent, Ok(None) if just a plain byte.
+pub(crate) fn recv_fd(sock: RawFd) -> io::Result<Option<RawFd>> {
     use std::mem;
 
     let mut data = [0u8; 1];
@@ -181,7 +182,7 @@ pub(crate) fn recv_fd(sock: RawFd) -> io::Result<RawFd> {
             if r < 0 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::Interrupted {
-                    continue; // retry on EINTR
+                    continue;
                 }
                 return Err(err);
             }
@@ -193,10 +194,10 @@ pub(crate) fn recv_fd(sock: RawFd) -> io::Result<RawFd> {
 
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
         if cmsg.is_null() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "no cmsg"));
+            return Ok(None); // no fd attached — non-interactive client
         }
         if (*cmsg).cmsg_level != libc::SOL_SOCKET || (*cmsg).cmsg_type != libc::SCM_RIGHTS {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "unexpected cmsg type"));
+            return Ok(None);
         }
 
         let mut fd: libc::c_int = 0;
@@ -205,7 +206,7 @@ pub(crate) fn recv_fd(sock: RawFd) -> io::Result<RawFd> {
             &mut fd as *mut libc::c_int as *mut u8,
             mem::size_of::<libc::c_int>(),
         );
-        Ok(fd)
+        Ok(Some(fd))
     }
 }
 
@@ -299,7 +300,7 @@ mod tests {
         send_fd(fds[0], pipe_fds[0]).expect("send_fd");
 
         // Receive it on the other end
-        let received_fd = recv_fd(fds[1]).expect("recv_fd");
+        let received_fd = recv_fd(fds[1]).expect("recv_fd").expect("should have fd");
         assert!(received_fd >= 0);
         assert_ne!(received_fd, pipe_fds[0]); // must be a new fd number
 

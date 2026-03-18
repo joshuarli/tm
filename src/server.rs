@@ -153,8 +153,10 @@ pub(crate) fn run_server() -> Result<()> {
                         };
 
                         // Receive the client's tty fd (blocking — before setting nonblock)
+                        // Returns None for non-interactive clients (ls, kill)
                         let tty_fd = match protocol::recv_fd(sock_fd) {
-                            Ok(fd) => fd,
+                            Ok(Some(fd)) => fd,
+                            Ok(None) => -1, // non-interactive, no tty
                             Err(_) => continue, // stream drops and closes sock_fd
                         };
                         // Now set non-blocking for the event loop
