@@ -24,25 +24,33 @@ use anyhow::{bail, Result};
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-    let cmd = args.get(1).map(String::as_str).unwrap_or("new");
+    let cmd = args.get(1).map(String::as_str);
 
     match cmd {
-        "new" => {
+        None | Some("-h") | Some("--help") | Some("help") => {
+            println!("Usage:");
+            println!("  tm new [-s NAME]      Create session and attach");
+            println!("  tm attach [-t NAME]   Attach to session");
+            println!("  tm ls                 List sessions");
+            println!("  tm kill [-t NAME]     Kill session");
+            Ok(())
+        }
+        Some("new") => {
             let session_name = parse_session_name(&args, 2);
             start_or_connect(protocol::MSG_NEW_SESSION, &session_name)
         }
-        "attach" | "a" => {
+        Some("attach" | "a") => {
             let session_name = parse_session_name(&args, 2);
             client::run_client(protocol::MSG_ATTACH, &session_name)
         }
-        "ls" | "list" => {
+        Some("ls" | "list") => {
             client::run_client(protocol::MSG_LIST, "")
         }
-        "kill" => {
+        Some("kill") => {
             let session_name = parse_session_name(&args, 2);
             client::run_client(protocol::MSG_KILL_SESSION, &session_name)
         }
-        other => {
+        Some(other) => {
             bail!("unknown command: {other}\n\nUsage:\n  tm new [-s NAME]\n  tm attach [-t NAME]\n  tm ls\n  tm kill [-t NAME]");
         }
     }

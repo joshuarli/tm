@@ -69,8 +69,8 @@ pub(crate) fn process_input(
                     return dispatch_action(state, config, cid, action);
                 }
 
-                // Unknown binding — ignore
-                return InputResult::None;
+                // Unknown binding — redraw to clear prefix indicator
+                return InputResult::Redraw;
             }
 
             // Check if this is the prefix key
@@ -78,7 +78,7 @@ pub(crate) fn process_input(
                 if let Some(client) = state.clients.get_mut(&cid) {
                     client.prefix_active = true;
                 }
-                return InputResult::None;
+                return InputResult::Redraw;
             }
 
             // In repeat window — check if key matches a repeat binding

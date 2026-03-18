@@ -405,26 +405,28 @@ fn handle_identify(
     tty.clear_screen();
     tty.flush_to(client.tty_fd).ok();
 
-    // Check if we should attach to an existing session or create new
-    let session_name = if name.is_empty() {
-        "0".to_string()
-    } else {
-        name
-    };
+    let has_name = !name.is_empty();
+    let session_name = if has_name { name } else { "0".to_string() };
 
     let sid = if msg.msg_type == protocol::MSG_ATTACH {
-        // Try to attach to existing
         if let Some(sid) = state.find_session_by_name(&session_name) {
             sid
-        } else if state.sessions.is_empty() {
-            // No sessions exist — create one
-            create_session(state, &session_name, sx, sy, new_panes)?
+        } else if !has_name {
+            // No name given — attach to first session, or create one
+            if let Some(&sid) = state.sessions.keys().next() {
+                sid
+            } else {
+                create_session(state, "0", sx, sy, new_panes)?
+            }
         } else {
-            // Attach to first session
-            *state.sessions.keys().next().ok_or(())?
+            send_to_client(
+                state,
+                cid,
+                &Message::new(protocol::MSG_ERROR, format!("session not found: {session_name}").into_bytes()),
+            );
+            return Err(());
         }
     } else {
-        // MSG_NEW_SESSION — always create
         create_session(state, &session_name, sx, sy, new_panes)?
     };
 
@@ -474,20 +476,23 @@ fn handle_attach(
     tty.clear_screen();
     tty.flush_to(client.tty_fd).ok();
 
-    // Find session
-    let session_name = if name.is_empty() {
-        "0".to_string()
-    } else {
-        name
-    };
+    let has_name = !name.is_empty();
+    let session_name = if has_name { name } else { "0".to_string() };
 
     let sid = if let Some(sid) = state.find_session_by_name(&session_name) {
         sid
-    } else if let Some(&sid) = state.sessions.keys().next() {
-        sid
+    } else if !has_name {
+        if let Some(&sid) = state.sessions.keys().next() {
+            sid
+        } else {
+            send_to_client(state, cid, &Message::new(protocol::MSG_ERROR, b"no sessions".to_vec()));
+            return Err(());
+        }
     } else {
-        // No sessions — send error
-        send_to_client(state, cid, &Message::new(protocol::MSG_ERROR, b"no sessions".to_vec()));
+        send_to_client(state, cid, &Message::new(
+            protocol::MSG_ERROR,
+            format!("session not found: {session_name}").into_bytes(),
+        ));
         return Err(());
     };
 
