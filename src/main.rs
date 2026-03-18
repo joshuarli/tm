@@ -69,17 +69,12 @@ fn parse_session_name(args: &[String], start: usize) -> String {
 fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
     let socket_path = protocol::socket_path();
 
-    // Check if server is already running
+    // If server socket exists, try to use it directly — no probe connection
     if socket_path.exists() {
-        // Try to connect
-        match std::os::unix::net::UnixStream::connect(&socket_path) {
-            Ok(_stream) => {
-                drop(_stream);
-                // Server exists — connect as client
-                return client::run_client(msg_type, session_name);
-            }
+        match client::run_client(msg_type, session_name) {
+            Ok(()) => return Ok(()),
             Err(_) => {
-                // Stale socket — remove it
+                // Server is dead — remove stale socket and start fresh
                 let _ = std::fs::remove_file(&socket_path);
             }
         }
@@ -94,34 +89,38 @@ fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
 
     if pid == 0 {
         // Child — become server
-        // Detach from controlling terminal
+        // Redirect stdin/stdout/stderr to /dev/null, but do NOT setsid —
+        // the server needs the controlling terminal to write to client tty fds.
         unsafe {
-            libc::setsid();
-        }
-        // Close stdin/stdout/stderr
-        unsafe {
-            libc::close(0);
-            libc::close(1);
-            libc::close(2);
-            // Reopen as /dev/null
-            libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
-            libc::dup2(0, 1);
-            libc::dup2(0, 2);
+            let devnull = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR);
+            if devnull >= 0 {
+                libc::dup2(devnull, 0);
+                libc::dup2(devnull, 1);
+                libc::dup2(devnull, 2);
+                if devnull > 2 {
+                    libc::close(devnull);
+                }
+            }
         }
 
-        if let Err(e) = server::run_server() {
-            crate::log::_log(&format!("server error: {e:#}"));
+        crate::log::init();
+
+        match server::run_server() {
+            Ok(()) => {}
+            Err(e) => {
+                let msg = format!("server error: {e:#}");
+                crate::log::_log(&msg);
+                let crash_path = socket_path.with_file_name("crash.log");
+                let _ = std::fs::write(&crash_path, msg.as_bytes());
+            }
         }
         std::process::exit(0);
     }
 
-    // Parent — become client
-    // Wait briefly for server to start
-    for _ in 0..50 {
+    // Parent — wait for server socket to appear
+    for _ in 0..200 {
         if socket_path.exists() {
-            if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-                break;
-            }
+            break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }

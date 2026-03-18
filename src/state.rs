@@ -332,3 +332,98 @@ impl Client {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_pane(state: &mut State) -> PaneId {
+        let pid = state.alloc_pane_id();
+        let pane = Pane::new(pid, -1, 0, 80, 24);
+        state.panes.insert(pid, pane);
+        pid
+    }
+
+    #[test]
+    fn test_create_session() {
+        let mut state = State::new();
+        let pid = make_test_pane(&mut state);
+        let sid = state.create_session("test", pid, 80, 25);
+
+        assert!(state.sessions.contains_key(&sid));
+        let session = &state.sessions[&sid];
+        assert_eq!(session.name, "test");
+        assert_eq!(session.windows.len(), 1);
+
+        let wid = session.active_window;
+        let window = &state.windows[&wid];
+        assert_eq!(window.idx, 1);
+        assert_eq!(window.active_pane, pid);
+    }
+
+    #[test]
+    fn test_find_session_by_name() {
+        let mut state = State::new();
+        let pid = make_test_pane(&mut state);
+        let sid = state.create_session("mysession", pid, 80, 25);
+
+        assert_eq!(state.find_session_by_name("mysession"), Some(sid));
+        assert_eq!(state.find_session_by_name("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_renumber_windows() {
+        let mut state = State::new();
+        let p1 = make_test_pane(&mut state);
+        let sid = state.create_session("s", p1, 80, 25);
+
+        // Add a second window manually
+        let p2 = make_test_pane(&mut state);
+        let wid2 = state.alloc_window_id();
+        let window2 = Window {
+            id: wid2,
+            idx: 5, // intentionally wrong
+            name: "w2".to_string(),
+            active_pane: p2,
+            panes: vec![p2],
+            sx: 80,
+            sy: 24,
+            zoomed: None,
+            session: sid,
+            layout: crate::layout::LayoutNode::Pane(p2),
+        };
+        state.windows.insert(wid2, window2);
+        state.sessions.get_mut(&sid).unwrap().windows.push(wid2);
+
+        state.renumber_windows(sid);
+
+        let session = &state.sessions[&sid];
+        let w1 = &state.windows[&session.windows[0]];
+        let w2 = &state.windows[&session.windows[1]];
+        assert_eq!(w1.idx, 1);
+        assert_eq!(w2.idx, 2);
+    }
+
+    #[test]
+    fn test_active_pane_for_client() {
+        let mut state = State::new();
+        let pid = make_test_pane(&mut state);
+        let sid = state.create_session("s", pid, 80, 25);
+        let cid = state.alloc_client_id();
+        state.clients.insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+
+        assert_eq!(state.active_pane_for_client(cid), Some(pid));
+    }
+
+    #[test]
+    fn test_alt_screen() {
+        let mut pane = Pane::new(PaneId(0), -1, 0, 80, 24);
+        assert!(!pane.is_alt_screen());
+
+        pane.enter_alt_screen();
+        assert!(pane.is_alt_screen());
+
+        pane.exit_alt_screen();
+        assert!(!pane.is_alt_screen());
+    }
+}

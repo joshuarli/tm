@@ -155,3 +155,56 @@ pub(crate) fn close_fd(fd: RawFd) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_pipe_cloexec() {
+        let (r, w) = pipe_cloexec().unwrap();
+        assert!(r >= 0);
+        assert!(w >= 0);
+        assert_ne!(r, w);
+
+        // Verify close-on-exec is set
+        let flags_r = unsafe { libc::fcntl(r, libc::F_GETFD) };
+        assert!(flags_r & libc::FD_CLOEXEC != 0);
+        let flags_w = unsafe { libc::fcntl(w, libc::F_GETFD) };
+        assert!(flags_w & libc::FD_CLOEXEC != 0);
+
+        close_fd(r);
+        close_fd(w);
+    }
+
+    #[test]
+    fn test_set_nonblock() {
+        let (r, w) = pipe_cloexec().unwrap();
+        set_nonblock(r).unwrap();
+
+        let flags = unsafe { libc::fcntl(r, libc::F_GETFL) };
+        assert!(flags & libc::O_NONBLOCK != 0);
+
+        close_fd(r);
+        close_fd(w);
+    }
+
+    #[test]
+    fn test_signal_pipe() {
+        // Use SIGUSR1 to avoid interfering with other signal handlers
+        let read_fd = signal_pipe(libc::SIGUSR1).unwrap();
+        assert!(read_fd >= 0);
+
+        // Send the signal to ourselves
+        unsafe { libc::raise(libc::SIGUSR1); }
+
+        // Should be able to read a byte from the pipe
+        let mut buf = [0u8; 1];
+        let n = unsafe {
+            libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1)
+        };
+        assert_eq!(n, 1);
+
+        close_fd(read_fd);
+    }
+}

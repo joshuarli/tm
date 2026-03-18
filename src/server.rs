@@ -51,8 +51,8 @@ pub(crate) fn run_server() -> Result<()> {
     };
 
     // Set up signal pipes
-    let sigchld_fd = sys::signal_pipe(libc::SIGCHLD)?;
-    let sigterm_fd = sys::signal_pipe(libc::SIGTERM)?;
+    let sigchld_fd = sys::signal_pipe(libc::SIGCHLD).context("setting up SIGCHLD handler")?;
+    let sigterm_fd = sys::signal_pipe(libc::SIGTERM).context("setting up SIGTERM handler")?;
 
     // Load config
     let mut config = Config::load();
@@ -87,7 +87,7 @@ pub(crate) fn run_server() -> Result<()> {
     let tick_interval = Duration::from_millis(16);
     let mut last_render = Instant::now();
     let mut needs_render = false;
-
+    let mut had_session = false; // only exit after we've had at least one session
     loop {
         let timeout = if needs_render {
             let since = last_render.elapsed();
@@ -113,7 +113,11 @@ pub(crate) fn run_server() -> Result<()> {
             Some(next_timeout)
         };
 
-        poll.poll(&mut events, timeout)?;
+        match poll.poll(&mut events, timeout) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
 
         let mut new_panes: Vec<PaneId> = Vec::new();
         let mut dead_clients: Vec<ClientId> = Vec::new();
@@ -147,16 +151,14 @@ pub(crate) fn run_server() -> Result<()> {
                             use std::os::unix::io::AsRawFd;
                             stream.as_raw_fd()
                         };
-                        sys::set_nonblock(sock_fd).ok();
 
-                        // Receive the client's tty fd
+                        // Receive the client's tty fd (blocking — before setting nonblock)
                         let tty_fd = match protocol::recv_fd(sock_fd) {
                             Ok(fd) => fd,
-                            Err(_) => {
-                                sys::close_fd(sock_fd);
-                                continue;
-                            }
+                            Err(_) => continue, // stream drops and closes sock_fd
                         };
+                        // Now set non-blocking for the event loop
+                        sys::set_nonblock(sock_fd).ok();
 
                         // Allocate client ID and register
                         let cid = state.alloc_client_id();
@@ -260,16 +262,20 @@ pub(crate) fn run_server() -> Result<()> {
             cleanup_client(&mut state, &mut poll, &mut client_tokens, *cid);
         }
 
-        // Check if all sessions are gone
-        if state.sessions.is_empty() && !state.clients.is_empty() {
-            // Detach all remaining clients
-            let cids: Vec<ClientId> = state.clients.keys().copied().collect();
-            for cid in cids {
-                send_to_client(&state, cid, &Message::empty(protocol::MSG_EXIT));
-                cleanup_client(&mut state, &mut poll, &mut client_tokens, cid);
-            }
+        if !state.sessions.is_empty() {
+            had_session = true;
         }
-        if state.sessions.is_empty() && state.clients.is_empty() {
+
+        // Check if all sessions are gone (only after we've had at least one)
+        if had_session && state.sessions.is_empty() {
+            // Detach all remaining clients
+            if !state.clients.is_empty() {
+                let cids: Vec<ClientId> = state.clients.keys().copied().collect();
+                for cid in cids {
+                    send_to_client(&state, cid, &Message::empty(protocol::MSG_EXIT));
+                    cleanup_client(&mut state, &mut poll, &mut client_tokens, cid);
+                }
+            }
             cleanup(&state, &socket_path);
             return Ok(());
         }
@@ -310,7 +316,14 @@ fn handle_client_data(
 
     let mut buf = [0u8; 8192];
     let n = unsafe { libc::read(sock_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-    if n <= 0 {
+    if n < 0 {
+        let err = std::io::Error::last_os_error();
+        if err.kind() == std::io::ErrorKind::Interrupted {
+            return Ok(()); // retry on next poll
+        }
+        return Err(());
+    }
+    if n == 0 {
         return Err(());
     }
 

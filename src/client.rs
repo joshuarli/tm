@@ -27,59 +27,68 @@ pub(crate) fn run_client(
         stream.as_raw_fd()
     };
 
-    sys::set_nonblock(sock_fd)?;
+    // Use stdin for input (it's the tty, and kqueue supports it).
+    // Open /dev/tty separately for winsize and to pass to the server —
+    // the server writes output directly to this fd.
+    let tty_fd = open_tty().context("opening /dev/tty")?;
+    let input_fd: RawFd = libc::STDIN_FILENO;
+    let (sx, sy) = sys::get_winsize(input_fd).context("getting terminal size")?;
 
-    let tty_fd = open_tty()?;
-    let (sx, sy) = sys::get_winsize(tty_fd)?;
-
-    // Send the client's tty fd to the server
-    protocol::send_fd(sock_fd, tty_fd)?;
+    // Send the tty fd to the server for rendering
+    protocol::send_fd(sock_fd, tty_fd).context("sending tty fd to server")?;
 
     // Send identify message
     let payload = protocol::encode_identify(session_name, sx, sy);
     let msg = Message::new(msg_type, payload);
-    send_blocking(sock_fd, &msg.encode())?;
+    send_blocking(sock_fd, &msg.encode()).context("sending identify message")?;
 
-    // For list command, just read the response and print it
+    // For list/kill commands, read the response in blocking mode and exit
     if msg_type == protocol::MSG_LIST {
         return handle_list_response(sock_fd);
     }
-
-    // For kill command, wait for response
     if msg_type == protocol::MSG_KILL_SESSION {
         return handle_kill_response(sock_fd);
     }
 
-    // Enter raw mode
-    let saved_termios = enter_raw_mode(tty_fd)?;
+    // Now set non-blocking for the event loop
+    sys::set_nonblock(sock_fd).context("set socket nonblock")?;
+    sys::set_nonblock(input_fd).context("set stdin nonblock")?;
+
+    // Enter raw mode on stdin
+    let saved_termios = enter_raw_mode(input_fd).context("entering raw mode")?;
 
     // Set up signal handling for SIGWINCH
-    let sigwinch_fd = sys::signal_pipe(libc::SIGWINCH)?;
+    let sigwinch_fd = sys::signal_pipe(libc::SIGWINCH).context("setting up SIGWINCH")?;
 
     // Set up mio event loop
-    let mut poll = Poll::new()?;
+    let mut poll = Poll::new().context("creating poll")?;
     let mut events = Events::with_capacity(64);
 
     poll.registry().register(
         &mut SourceFd(&sock_fd),
         TOKEN_SOCKET,
         Interest::READABLE,
-    )?;
+    ).context("registering socket")?;
     poll.registry().register(
-        &mut SourceFd(&tty_fd),
+        &mut SourceFd(&input_fd),
         TOKEN_TTY,
         Interest::READABLE,
-    )?;
+    ).context("registering stdin")?;
     poll.registry().register(
         &mut SourceFd(&sigwinch_fd),
         TOKEN_SIGWINCH,
         Interest::READABLE,
-    )?;
+    ).context("registering sigwinch")?;
 
-    let result = client_loop(&mut poll, &mut events, sock_fd, tty_fd, sigwinch_fd);
+    let result = client_loop(&mut poll, &mut events, sock_fd, input_fd, sigwinch_fd);
 
-    // Restore terminal
-    restore_terminal(tty_fd, &saved_termios);
+    // Restore terminal — MUST restore blocking mode on stdin
+    restore_terminal(input_fd, &saved_termios);
+    // Clear nonblock on stdin so the parent shell isn't broken
+    let flags = unsafe { libc::fcntl(input_fd, libc::F_GETFL) };
+    if flags >= 0 {
+        unsafe { libc::fcntl(input_fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) };
+    }
 
     result
 }
@@ -95,7 +104,11 @@ fn client_loop(
     let mut read_buf = [0u8; 8192];
 
     loop {
-        poll.poll(events, None)?;
+        match poll.poll(events, None) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e.into()),
+        }
 
         for event in events.iter() {
             match event.token() {

@@ -99,55 +99,56 @@ pub(crate) fn decode_resize(payload: &[u8]) -> Option<(u32, u32)> {
     Some((sx, sy))
 }
 
+/// Properly aligned cmsg buffer for SCM_RIGHTS (one fd).
+#[repr(C)]
+struct CmsgFd {
+    hdr: libc::cmsghdr,
+    fd: libc::c_int,
+}
+
 /// Send a file descriptor over a Unix socket using SCM_RIGHTS.
 pub(crate) fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
     use std::mem;
 
-    let data = [0u8; 1];
-    let iov = libc::iovec {
-        iov_base: data.as_ptr() as *mut libc::c_void,
+    let mut data = [0u8; 1];
+    let mut iov = libc::iovec {
+        iov_base: data.as_mut_ptr() as *mut libc::c_void,
         iov_len: 1,
     };
 
-    // cmsg buffer must be properly aligned
-    #[repr(C)]
-    struct CmsgBuf {
-        hdr: libc::cmsghdr,
-        fd: libc::c_int,
-    }
-    let _cmsg_buf = unsafe { mem::zeroed::<CmsgBuf>() };
+    let cmsg_space = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::c_int>() as u32) };
 
-    let cmsg_len = unsafe { libc::CMSG_LEN(mem::size_of::<libc::c_int>() as u32) } as usize;
-    let cmsg_space = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::c_int>() as u32) } as usize;
+    // Use the aligned struct as our cmsg buffer
+    let mut cmsg_buf = unsafe { mem::zeroed::<CmsgFd>() };
 
-    // Use a raw byte buffer for the cmsg to ensure proper alignment
-    let mut cmsg_bytes = vec![0u8; cmsg_space];
+    let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &mut cmsg_buf as *mut CmsgFd as *mut libc::c_void;
+    msg.msg_controllen = cmsg_space as _;
 
-    let msg = libc::msghdr {
-        msg_name: std::ptr::null_mut(),
-        msg_namelen: 0,
-        msg_iov: &iov as *const libc::iovec as *mut libc::iovec,
-        msg_iovlen: 1,
-        msg_control: cmsg_bytes.as_mut_ptr() as *mut libc::c_void,
-        msg_controllen: cmsg_space as _,
-        msg_flags: 0,
-    };
-
-    // SAFETY: the cmsg buffer is properly sized and aligned.
+    // SAFETY: cmsg_buf is properly aligned and sized for one fd.
     unsafe {
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
-        (*cmsg).cmsg_len = cmsg_len as _;
+        (*cmsg).cmsg_len = libc::CMSG_LEN(mem::size_of::<libc::c_int>() as u32) as _;
         std::ptr::copy_nonoverlapping(
             &fd as *const libc::c_int as *const u8,
             libc::CMSG_DATA(cmsg),
             mem::size_of::<libc::c_int>(),
         );
 
-        let ret = libc::sendmsg(sock, &msg, 0);
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
+        loop {
+            let r = libc::sendmsg(sock, &msg, 0);
+            if r < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(err);
+            }
+            break;
         }
     }
     Ok(())
@@ -163,25 +164,29 @@ pub(crate) fn recv_fd(sock: RawFd) -> io::Result<RawFd> {
         iov_len: 1,
     };
 
-    let cmsg_space = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::c_int>() as u32) } as usize;
-    let mut cmsg_bytes = vec![0u8; cmsg_space];
+    let cmsg_space = unsafe { libc::CMSG_SPACE(mem::size_of::<libc::c_int>() as u32) };
 
-    let mut msg = libc::msghdr {
-        msg_name: std::ptr::null_mut(),
-        msg_namelen: 0,
-        msg_iov: &mut iov,
-        msg_iovlen: 1,
-        msg_control: cmsg_bytes.as_mut_ptr() as *mut libc::c_void,
-        msg_controllen: cmsg_space as _,
-        msg_flags: 0,
-    };
+    let mut cmsg_buf = unsafe { mem::zeroed::<CmsgFd>() };
 
-    // SAFETY: the cmsg buffer is properly sized.
+    let mut msg: libc::msghdr = unsafe { mem::zeroed() };
+    msg.msg_iov = &mut iov;
+    msg.msg_iovlen = 1;
+    msg.msg_control = &mut cmsg_buf as *mut CmsgFd as *mut libc::c_void;
+    msg.msg_controllen = cmsg_space as _;
+
+    // SAFETY: cmsg_buf is properly aligned and sized.
     unsafe {
-        let ret = libc::recvmsg(sock, &mut msg, 0);
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
-        }
+        let ret = loop {
+            let r = libc::recvmsg(sock, &mut msg, 0);
+            if r < 0 {
+                let err = io::Error::last_os_error();
+                if err.kind() == io::ErrorKind::Interrupted {
+                    continue; // retry on EINTR
+                }
+                return Err(err);
+            }
+            break r;
+        };
         if ret == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed"));
         }
@@ -254,6 +259,70 @@ mod tests {
         assert!(Message::decode(&encoded[..5]).is_none());
         // Full data works
         assert!(Message::decode(&encoded).is_some());
+    }
+
+    #[test]
+    fn test_multiple_messages_in_buffer() {
+        let msg1 = Message::new(MSG_INPUT, b"ab".to_vec());
+        let msg2 = Message::new(MSG_RESIZE, encode_resize(80, 24));
+        let mut buf = msg1.encode();
+        buf.extend_from_slice(&msg2.encode());
+
+        let (decoded1, consumed1) = Message::decode(&buf).unwrap();
+        assert_eq!(decoded1.msg_type, MSG_INPUT);
+        assert_eq!(decoded1.payload, b"ab");
+
+        let (decoded2, consumed2) = Message::decode(&buf[consumed1..]).unwrap();
+        assert_eq!(decoded2.msg_type, MSG_RESIZE);
+        assert_eq!(consumed1 + consumed2, buf.len());
+    }
+
+    #[test]
+    fn test_send_recv_fd() {
+        // Create a Unix socket pair and pass an fd through it
+        let mut fds = [0i32; 2];
+        let ret = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        assert_eq!(ret, 0);
+
+        // Create a pipe — we'll pass the read end through the socket
+        let mut pipe_fds = [0i32; 2];
+        let ret = unsafe { libc::pipe(pipe_fds.as_mut_ptr()) };
+        assert_eq!(ret, 0);
+
+        // Write something to the pipe so we can verify the received fd works
+        let data = b"hello";
+        unsafe {
+            libc::write(pipe_fds[1], data.as_ptr() as *const libc::c_void, data.len());
+        }
+
+        // Send the pipe read end through the socket
+        send_fd(fds[0], pipe_fds[0]).expect("send_fd");
+
+        // Receive it on the other end
+        let received_fd = recv_fd(fds[1]).expect("recv_fd");
+        assert!(received_fd >= 0);
+        assert_ne!(received_fd, pipe_fds[0]); // must be a new fd number
+
+        // Read from the received fd — should get "hello"
+        let mut buf = [0u8; 16];
+        let n = unsafe { libc::read(received_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        assert_eq!(n, 5);
+        assert_eq!(&buf[..5], b"hello");
+
+        // Clean up
+        for fd in [fds[0], fds[1], pipe_fds[0], pipe_fds[1], received_fd] {
+            unsafe { libc::close(fd); }
+        }
+    }
+
+    #[test]
+    fn test_cmsg_alignment() {
+        // Verify our CmsgFd struct matches CMSG_SPACE
+        let cmsg_space = unsafe {
+            libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32)
+        } as usize;
+        assert!(std::mem::size_of::<CmsgFd>() >= cmsg_space);
+        assert!(std::mem::align_of::<CmsgFd>() >= std::mem::align_of::<libc::cmsghdr>());
     }
 }
 
