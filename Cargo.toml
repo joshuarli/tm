@@ -1,0 +1,12 @@
+[package]
+name = "tm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+mio = { version = "1", features = ["os-poll", "os-ext"] }
+
+[profile.dev]
+opt-level = 1

@@ -1,0 +1,566 @@
+use crate::grid::{CellContent, Color, Grid};
+
+/// Screen mode bitflags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ScreenMode(pub(crate) u32);
+
+impl ScreenMode {
+    pub(crate) const CURSOR_VISIBLE: u32 = 0x01;
+    pub(crate) const INSERT: u32 = 0x02;
+    pub(crate) const WRAP: u32 = 0x04;
+    pub(crate) const ORIGIN: u32 = 0x08;
+    pub(crate) const MOUSE_BUTTON: u32 = 0x10;
+    pub(crate) const MOUSE_SGR: u32 = 0x20;
+    pub(crate) const MOUSE_ANY: u32 = 0x40;
+    pub(crate) const BRACKETED_PASTE: u32 = 0x80;
+    pub(crate) const FOCUS_EVENTS: u32 = 0x100;
+    pub(crate) const ALT_SCREEN: u32 = 0x200;
+    pub(crate) const SYNCED_OUTPUT: u32 = 0x400;
+
+    pub(crate) fn has(self, flag: u32) -> bool {
+        self.0 & flag != 0
+    }
+
+    pub(crate) fn set(&mut self, flag: u32) {
+        self.0 |= flag;
+    }
+
+    pub(crate) fn clear(&mut self, flag: u32) {
+        self.0 &= !flag;
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CursorStyle {
+    #[default]
+    Block,
+    Underline,
+    Beam,
+    BlinkingBlock,
+    BlinkingUnderline,
+    BlinkingBeam,
+}
+
+pub(crate) struct Screen {
+    pub(crate) grid: Grid,
+    pub(crate) cx: u32,
+    pub(crate) cy: u32,
+    pub(crate) rupper: u32,
+    pub(crate) rlower: u32,
+    pub(crate) mode: ScreenMode,
+    pub(crate) saved_cx: u32,
+    pub(crate) saved_cy: u32,
+    pub(crate) saved_cell: CellContent,
+    pub(crate) tabs: Vec<bool>,
+    pub(crate) title: String,
+    pub(crate) cursor_style: CursorStyle,
+    // Current cell style (used for next character written)
+    pub(crate) cell: CellContent,
+    // Pending wrap: cursor is at the right margin, next printable wraps
+    pub(crate) pending_wrap: bool,
+}
+
+impl Screen {
+    pub(crate) fn new(sx: u32, sy: u32) -> Self {
+        let mut tabs = vec![false; sx as usize];
+        // Default tab stops every 8 columns
+        for i in (8..sx).step_by(8) {
+            tabs[i as usize] = true;
+        }
+
+        let mode = ScreenMode(ScreenMode::CURSOR_VISIBLE | ScreenMode::WRAP);
+
+        Self {
+            grid: Grid::new(sx, sy, 10000),
+            cx: 0,
+            cy: 0,
+            rupper: 0,
+            rlower: sy.saturating_sub(1),
+            mode,
+            saved_cx: 0,
+            saved_cy: 0,
+            saved_cell: CellContent::default(),
+            tabs,
+            title: String::new(),
+            cursor_style: CursorStyle::default(),
+            cell: CellContent::default(),
+            pending_wrap: false,
+        }
+    }
+
+    pub(crate) fn sx(&self) -> u32 {
+        self.grid.sx
+    }
+
+    pub(crate) fn sy(&self) -> u32 {
+        self.grid.sy
+    }
+
+    /// Put a character at the cursor position, advancing the cursor.
+    pub(crate) fn put_char(&mut self, ch: &[u8], ch_len: u8, ch_width: u8) {
+        let sx = self.sx();
+
+        // Handle pending wrap
+        if self.pending_wrap {
+            self.pending_wrap = false;
+            if self.mode.has(ScreenMode::WRAP) {
+                // Mark current line as wrapped
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.flags.0 |= crate::grid::LineFlags::WRAPPED;
+                }
+                self.carriage_return();
+                self.linefeed();
+            }
+        }
+
+        // Build cell content
+        let mut content = self.cell;
+        content.ch[..ch_len as usize].copy_from_slice(&ch[..ch_len as usize]);
+        content.ch_len = ch_len;
+        content.ch_width = ch_width;
+
+        // Insert mode: shift characters right
+        if self.mode.has(ScreenMode::INSERT) {
+            self.insert_cells(ch_width as u32);
+        }
+
+        // Write cell
+        if let Some(line) = self.grid.visible_line_mut(self.cy) {
+            line.set_cell(self.cx, &content);
+        }
+
+        // Advance cursor
+        let new_cx = self.cx + ch_width as u32;
+        if new_cx >= sx {
+            // At right margin — set pending wrap
+            self.cx = sx - 1;
+            self.pending_wrap = true;
+        } else {
+            self.cx = new_cx;
+        }
+    }
+
+    /// Insert blank cells at cursor, shifting existing cells right.
+    pub(crate) fn insert_cells(&mut self, count: u32) {
+        let sx = self.sx();
+        if let Some(line) = self.grid.visible_line_mut(self.cy) {
+            let cx = self.cx as usize;
+            let end = sx as usize;
+            if cx < end {
+                let count = count as usize;
+                // Shift cells right
+                for i in (cx + count..end).rev() {
+                    line.compact[i] = line.compact[i - count];
+                    line.compact[i].set_dirty();
+                }
+                // Clear inserted cells
+                for i in cx..cx + count.min(end - cx) {
+                    line.compact[i] = Default::default();
+                    line.compact[i].set_dirty();
+                }
+            }
+        }
+    }
+
+    pub(crate) fn carriage_return(&mut self) {
+        self.cx = 0;
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn linefeed(&mut self) {
+        if self.cy == self.rlower {
+            self.grid.scroll_up(self.rupper, self.rlower);
+        } else if self.cy < self.sy() - 1 {
+            self.cy += 1;
+        }
+    }
+
+    pub(crate) fn reverse_index(&mut self) {
+        if self.cy == self.rupper {
+            self.grid.scroll_down(self.rupper, self.rlower);
+        } else if self.cy > 0 {
+            self.cy -= 1;
+        }
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn cursor_up(&mut self, n: u32) {
+        let top = if self.cy >= self.rupper && self.cy <= self.rlower {
+            self.rupper
+        } else {
+            0
+        };
+        self.cy = self.cy.saturating_sub(n).max(top);
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn cursor_down(&mut self, n: u32) {
+        let bottom = if self.cy >= self.rupper && self.cy <= self.rlower {
+            self.rlower
+        } else {
+            self.sy() - 1
+        };
+        self.cy = (self.cy + n).min(bottom);
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn cursor_left(&mut self, n: u32) {
+        self.cx = self.cx.saturating_sub(n);
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn cursor_right(&mut self, n: u32) {
+        self.cx = (self.cx + n).min(self.sx() - 1);
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn cursor_to(&mut self, row: u32, col: u32) {
+        let (row, max_row) = if self.mode.has(ScreenMode::ORIGIN) {
+            (row + self.rupper, self.rlower)
+        } else {
+            (row, self.sy() - 1)
+        };
+        self.cx = col.min(self.sx().saturating_sub(1));
+        self.cy = row.min(max_row);
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn save_cursor(&mut self) {
+        self.saved_cx = self.cx;
+        self.saved_cy = self.cy;
+        self.saved_cell = self.cell;
+    }
+
+    pub(crate) fn restore_cursor(&mut self) {
+        self.cx = self.saved_cx.min(self.sx().saturating_sub(1));
+        self.cy = self.saved_cy.min(self.sy().saturating_sub(1));
+        self.cell = self.saved_cell;
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn tab(&mut self) {
+        let sx = self.sx();
+        let mut next = self.cx + 1;
+        while next < sx {
+            if next < self.tabs.len() as u32 && self.tabs[next as usize] {
+                break;
+            }
+            next += 1;
+        }
+        self.cx = next.min(sx - 1);
+        self.pending_wrap = false;
+    }
+
+    pub(crate) fn backspace(&mut self) {
+        if self.cx > 0 {
+            self.cx -= 1;
+        }
+        self.pending_wrap = false;
+    }
+
+    /// Erase in display (ED).
+    pub(crate) fn erase_display(&mut self, mode: u32) {
+        let sx = self.sx();
+        let sy = self.sy();
+        let blank = CellContent::default_with_bg(self.cell.bg);
+        match mode {
+            0 => {
+                // Erase from cursor to end
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.clear_range(self.cx, sx, &blank);
+                }
+                for row in (self.cy + 1)..sy {
+                    if let Some(line) = self.grid.visible_line_mut(row) {
+                        line.clear_range(0, sx, &blank);
+                    }
+                }
+            }
+            1 => {
+                // Erase from start to cursor
+                for row in 0..self.cy {
+                    if let Some(line) = self.grid.visible_line_mut(row) {
+                        line.clear_range(0, sx, &blank);
+                    }
+                }
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.clear_range(0, self.cx + 1, &blank);
+                }
+            }
+            2 | 3 => {
+                // Erase entire display
+                for row in 0..sy {
+                    if let Some(line) = self.grid.visible_line_mut(row) {
+                        line.clear_range(0, sx, &blank);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Erase in line (EL).
+    pub(crate) fn erase_line(&mut self, mode: u32) {
+        let sx = self.sx();
+        let blank = CellContent::default_with_bg(self.cell.bg);
+        match mode {
+            0 => {
+                // Erase from cursor to end of line
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.clear_range(self.cx, sx, &blank);
+                }
+            }
+            1 => {
+                // Erase from start to cursor
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.clear_range(0, self.cx + 1, &blank);
+                }
+            }
+            2 => {
+                // Erase entire line
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.clear_range(0, sx, &blank);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Delete characters at cursor, shifting left.
+    pub(crate) fn delete_chars(&mut self, n: u32) {
+        let sx = self.sx();
+        if let Some(line) = self.grid.visible_line_mut(self.cy) {
+            let cx = self.cx as usize;
+            let end = sx as usize;
+            let n = n as usize;
+            if cx < end {
+                for i in cx..end {
+                    let src = i + n;
+                    if src < end {
+                        line.compact[i] = line.compact[src];
+                    } else {
+                        line.compact[i] = Default::default();
+                    }
+                    line.compact[i].set_dirty();
+                }
+            }
+        }
+    }
+
+    /// Insert blank lines at cursor row, shifting down.
+    pub(crate) fn insert_lines(&mut self, n: u32) {
+        if self.cy < self.rupper || self.cy > self.rlower {
+            return;
+        }
+        for _ in 0..n {
+            self.grid.scroll_down(self.cy, self.rlower);
+        }
+    }
+
+    /// Delete lines at cursor row, shifting up.
+    pub(crate) fn delete_lines(&mut self, n: u32) {
+        if self.cy < self.rupper || self.cy > self.rlower {
+            return;
+        }
+        for _ in 0..n {
+            self.grid.scroll_up(self.cy, self.rlower);
+        }
+    }
+
+    pub(crate) fn set_scroll_region(&mut self, top: u32, bottom: u32) {
+        let sy = self.sy();
+        let top = top.min(sy.saturating_sub(2));
+        let bottom = bottom.min(sy.saturating_sub(1));
+        if top >= bottom {
+            return;
+        }
+        self.rupper = top;
+        self.rlower = bottom;
+        self.cursor_to(0, 0);
+    }
+
+    pub(crate) fn reset_scroll_region(&mut self) {
+        self.rupper = 0;
+        self.rlower = self.sy().saturating_sub(1);
+    }
+
+    pub(crate) fn resize(&mut self, sx: u32, sy: u32) {
+        self.grid.resize(sx, sy);
+        self.cx = self.cx.min(sx.saturating_sub(1));
+        self.cy = self.cy.min(sy.saturating_sub(1));
+        self.rupper = 0;
+        self.rlower = sy.saturating_sub(1);
+        self.pending_wrap = false;
+
+        // Reset tab stops
+        self.tabs = vec![false; sx as usize];
+        for i in (8..sx).step_by(8) {
+            self.tabs[i as usize] = true;
+        }
+    }
+
+    pub(crate) fn clear_all(&mut self) {
+        self.grid.clear();
+        self.cx = 0;
+        self.cy = 0;
+        self.rupper = 0;
+        self.rlower = self.sy().saturating_sub(1);
+        self.pending_wrap = false;
+        self.cell = CellContent::default();
+    }
+
+    pub(crate) fn mark_all_dirty(&mut self) {
+        self.grid.mark_all_dirty();
+    }
+
+    /// Erase characters at cursor position (replace with blanks, don't shift).
+    pub(crate) fn erase_chars(&mut self, n: u32) {
+        let sx = self.sx();
+        let end = (self.cx + n).min(sx);
+        let blank = CellContent::default_with_bg(self.cell.bg);
+        if let Some(line) = self.grid.visible_line_mut(self.cy) {
+            line.clear_range(self.cx, end, &blank);
+        }
+    }
+}
+
+impl CellContent {
+    pub(crate) fn default_with_bg(bg: Color) -> Self {
+        let mut c = Self::default();
+        c.bg = bg;
+        c
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_screen_new() {
+        let s = Screen::new(80, 24);
+        assert_eq!(s.cx, 0);
+        assert_eq!(s.cy, 0);
+        assert_eq!(s.sx(), 80);
+        assert_eq!(s.sy(), 24);
+        assert_eq!(s.rupper, 0);
+        assert_eq!(s.rlower, 23);
+    }
+
+    #[test]
+    fn test_put_char() {
+        let mut s = Screen::new(80, 24);
+        s.put_char(b"A\0\0\0\0\0\0\0", 1, 1);
+        assert_eq!(s.cx, 1);
+        let cell = s.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'A');
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut s = Screen::new(80, 24);
+        s.cursor_to(5, 10);
+        assert_eq!(s.cy, 5);
+        assert_eq!(s.cx, 10);
+
+        s.cursor_up(3);
+        assert_eq!(s.cy, 2);
+
+        s.cursor_down(10);
+        assert_eq!(s.cy, 12);
+
+        s.cursor_left(5);
+        assert_eq!(s.cx, 5);
+
+        s.cursor_right(100);
+        assert_eq!(s.cx, 79);
+    }
+
+    #[test]
+    fn test_linefeed_scrolls() {
+        let mut s = Screen::new(80, 5);
+        // Move to bottom row
+        s.cursor_to(4, 0);
+        // Write 'A' on last row
+        s.put_char(b"A\0\0\0\0\0\0\0", 1, 1);
+        // Linefeed should scroll
+        s.linefeed();
+        assert_eq!(s.cy, 4);
+        // 'A' should now be in history
+        assert_eq!(s.grid.hsize(), 1);
+    }
+
+    #[test]
+    fn test_scroll_region() {
+        let mut s = Screen::new(80, 10);
+        s.set_scroll_region(2, 5);
+        assert_eq!(s.rupper, 2);
+        assert_eq!(s.rlower, 5);
+        // Cursor should be at 0,0 after setting scroll region
+        assert_eq!(s.cx, 0);
+        assert_eq!(s.cy, 0);
+    }
+
+    #[test]
+    fn test_erase_line() {
+        let mut s = Screen::new(80, 24);
+        for c in b"Hello, World!" {
+            s.put_char(&[*c, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        s.cx = 5;
+        s.erase_line(0); // erase from cursor to end
+        let cell = s.grid.visible_line(0).unwrap().get_cell(5);
+        assert_eq!(cell.ch[0], b' ');
+        // Chars before cursor should be preserved
+        let cell = s.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'H');
+    }
+
+    #[test]
+    fn test_save_restore_cursor() {
+        let mut s = Screen::new(80, 24);
+        s.cursor_to(10, 20);
+        s.save_cursor();
+        s.cursor_to(0, 0);
+        s.restore_cursor();
+        assert_eq!(s.cy, 10);
+        assert_eq!(s.cx, 20);
+    }
+
+    #[test]
+    fn test_pending_wrap() {
+        let mut s = Screen::new(5, 3);
+        // Write to end of line
+        for c in b"ABCDE" {
+            s.put_char(&[*c, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        // Cursor should be at column 4 with pending wrap
+        assert_eq!(s.cx, 4);
+        assert!(s.pending_wrap);
+
+        // Next char should wrap to next line
+        s.put_char(b"F\0\0\0\0\0\0\0", 1, 1);
+        assert_eq!(s.cy, 1);
+        assert_eq!(s.cx, 1);
+    }
+
+    #[test]
+    fn test_tab_stops() {
+        let s = Screen::new(80, 24);
+        // Default tabs at every 8 columns
+        assert!(s.tabs[8]);
+        assert!(s.tabs[16]);
+        assert!(!s.tabs[5]);
+    }
+
+    #[test]
+    fn test_resize() {
+        let mut s = Screen::new(80, 24);
+        s.cursor_to(20, 70);
+        s.resize(40, 12);
+        assert_eq!(s.sx(), 40);
+        assert_eq!(s.sy(), 12);
+        // Cursor should be clamped
+        assert!(s.cx < 40);
+        assert!(s.cy < 12);
+    }
+}
