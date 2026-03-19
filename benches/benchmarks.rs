@@ -2,10 +2,10 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 use tm::grid::{CellContent, Grid, GridLine, LineFlags};
-use tm::simd::SimdScanner;
 use tm::keys;
 use tm::screen::Screen;
-use tm::state::{Pane, PaneId, Selection};
+use tm::simd::SimdScanner;
+use tm::state::{Pane, PaneId};
 use tm::tty::TtyWriter;
 use tm::vt;
 
@@ -251,9 +251,19 @@ fn bench_tty_set_cell_attrs(c: &mut Criterion) {
     use tm::grid::Color;
     let mut tty = TtyWriter::new();
     let cells = [
-        CellContent { fg: Color::Palette(1), ..CellContent::default() },
-        CellContent { fg: Color::Palette(2), bg: Color::Palette(4), ..CellContent::default() },
-        CellContent { fg: Color::Rgb(100, 200, 50), ..CellContent::default() },
+        CellContent {
+            fg: Color::Palette(1),
+            ..CellContent::default()
+        },
+        CellContent {
+            fg: Color::Palette(2),
+            bg: Color::Palette(4),
+            ..CellContent::default()
+        },
+        CellContent {
+            fg: Color::Rgb(100, 200, 50),
+            ..CellContent::default()
+        },
         CellContent::default(),
     ];
     let mut i = 0usize;
@@ -386,7 +396,7 @@ fn bench_delete_insert_lines(c: &mut Criterion) {
 }
 
 fn bench_selection_extract(c: &mut Criterion) {
-    use tm::state::{Pane, PaneId, Selection, State};
+    use tm::state::{Pane, Selection, State};
     // Fill a pane with lots of text, then extract a large selection
     let mut state = State::new();
     let pid = state.alloc_pane_id();
@@ -395,7 +405,11 @@ fn bench_selection_extract(c: &mut Criterion) {
     for _ in 0..1000 {
         for col in 0..80 {
             let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
-            pane.screen.grid.visible_line_mut(0).unwrap().set_cell(col, &content);
+            pane.screen
+                .grid
+                .visible_line_mut(0)
+                .unwrap()
+                .set_cell(col, &content);
         }
         pane.screen.grid.scroll_up(0, 23);
     }
@@ -418,7 +432,7 @@ fn bench_selection_extract(c: &mut Criterion) {
 
 fn bench_render_full_screen(c: &mut Criterion) {
     use tm::config::Config;
-    use tm::state::{Client, Pane, PaneId, State};
+    use tm::state::{Client, Pane, State};
     // Build a state with a filled pane and render it
     let mut state = State::new();
     let config = Config::default_config();
@@ -428,19 +442,25 @@ fn bench_render_full_screen(c: &mut Criterion) {
     for row in 0..24 {
         for col in 0..80 {
             let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
-            pane.screen.grid.visible_line_mut(row).unwrap().set_cell(col, &content);
+            pane.screen
+                .grid
+                .visible_line_mut(row)
+                .unwrap()
+                .set_cell(col, &content);
         }
     }
     state.panes.insert(pid, pane);
     let sid = state.create_session("bench", pid, 80, 25);
     let cid = state.alloc_client_id();
-    state.clients.insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+    state
+        .clients
+        .insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
     // Mark all dirty
     for row in 0..24u32 {
-        if let Some(pane) = state.panes.get_mut(&pid) {
-            if let Some(line) = pane.screen.grid.visible_line_mut(row) {
-                line.mark_dirty();
-            }
+        if let Some(pane) = state.panes.get_mut(&pid)
+            && let Some(line) = pane.screen.grid.visible_line_mut(row)
+        {
+            line.mark_dirty();
         }
     }
     c.bench_function("render full 80x24 screen", |b| {
@@ -471,10 +491,7 @@ fn bench_layout_calculate(c: &mut Criterion) {
             },
             LayoutNode::Split {
                 dir: SplitDir::Vertical,
-                children: vec![
-                    LayoutNode::Pane(PaneId(3)),
-                    LayoutNode::Pane(PaneId(4)),
-                ],
+                children: vec![LayoutNode::Pane(PaneId(3)), LayoutNode::Pane(PaneId(4))],
             },
         ],
     };
@@ -484,10 +501,10 @@ fn bench_layout_calculate(c: &mut Criterion) {
 }
 
 fn bench_protocol_encode_decode(c: &mut Criterion) {
-    use tm::protocol::{Message, MSG_INPUT};
+    use tm::protocol::{MSG_INPUT, Message};
     let payload = vec![0x41u8; 256];
     let msg = Message::new(MSG_INPUT, payload);
-    let encoded = msg.encode();
+    let _encoded = msg.encode();
     c.bench_function("protocol encode+decode 256B", |b| {
         b.iter(|| {
             let enc = msg.encode();
@@ -614,4 +631,12 @@ criterion_group!(
     bench_mouse_drag_input,
 );
 
-criterion_main!(grid_benches, vt_benches, screen_benches, input_benches, tty_benches, simd_benches, slow_path_benches);
+criterion_main!(
+    grid_benches,
+    vt_benches,
+    screen_benches,
+    input_benches,
+    tty_benches,
+    simd_benches,
+    slow_path_benches
+);

@@ -20,7 +20,7 @@ mod sys;
 mod tty;
 mod vt;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Result, bail};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

@@ -147,10 +147,10 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
 
         // Expire status messages (two-pass to avoid borrow conflict)
         for (cid, client) in &state.clients {
-            if let Some((_, when)) = &client.status_message {
-                if when.elapsed() >= Duration::from_secs(2) {
-                    expired_msgs.push(*cid);
-                }
+            if let Some((_, when)) = &client.status_message
+                && when.elapsed() >= Duration::from_secs(2)
+            {
+                expired_msgs.push(*cid);
             }
         }
         for cid in &expired_msgs {
@@ -177,8 +177,13 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
                         std::mem::forget(stream); // prevent close on drop
 
                         if register_new_connection(
-                            sock_fd, &mut state, &mut poll, &mut client_tokens,
-                        ).is_err() {
+                            sock_fd,
+                            &mut state,
+                            &mut poll,
+                            &mut client_tokens,
+                        )
+                        .is_err()
+                        {
                             sys::close_fd(sock_fd);
                         }
                     }
@@ -190,8 +195,7 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
                     // Reap all dead children
                     loop {
                         let mut status: libc::c_int = 0;
-                        let pid =
-                            unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+                        let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
                         if pid <= 0 {
                             break;
                         }
@@ -210,7 +214,7 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
                 }
                 token if client_tokens.contains_key(&token) => {
                     let cid = client_tokens[&token];
-                    if let Err(_) = handle_client_data(
+                    if handle_client_data(
                         &mut state,
                         &mut config,
                         &mut poll,
@@ -219,7 +223,9 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
                         &mut new_panes,
                         &mut force_render,
                         &mut input_events,
-                    ) {
+                    )
+                    .is_err()
+                    {
                         dead_clients.push(cid);
                     }
                 }
@@ -234,14 +240,10 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
 
         // Register new pane tokens
         for pid in &new_panes {
-            if let Some(pane) = state.panes.get(&pid) {
+            if let Some(pane) = state.panes.get(pid) {
                 let token = pane_token(*pid);
                 poll.registry()
-                    .register(
-                        &mut SourceFd(&pane.pty_master),
-                        token,
-                        Interest::READABLE,
-                    )
+                    .register(&mut SourceFd(&pane.pty_master), token, Interest::READABLE)
                     .ok();
                 pane_tokens.insert(token, *pid);
             }
@@ -315,21 +317,15 @@ fn register_new_connection(
 
     // Receive the client's tty fd.
     // Returns None for non-interactive clients (ls, kill).
-    let tty_fd = match protocol::recv_fd(sock_fd)? {
-        Some(fd) => fd,
-        None => -1,
-    };
+    let tty_fd = protocol::recv_fd(sock_fd)?.unwrap_or(-1);
 
     sys::set_nonblock(sock_fd)?;
 
     let cid = state.alloc_client_id();
     let token = client_token(cid);
 
-    poll.registry().register(
-        &mut SourceFd(&sock_fd),
-        token,
-        Interest::READABLE,
-    )?;
+    poll.registry()
+        .register(&mut SourceFd(&sock_fd), token, Interest::READABLE)?;
 
     let client = crate::state::Client::new(
         cid,
@@ -354,6 +350,7 @@ fn drain_signal_pipe(fd: RawFd) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_client_data(
     state: &mut State,
     config: &mut Config,
@@ -407,7 +404,15 @@ fn handle_client_data(
                 *force_render = true;
             }
             protocol::MSG_INPUT => {
-                handle_input(state, config, cid, &msg.payload, new_panes, force_render, input_events);
+                handle_input(
+                    state,
+                    config,
+                    cid,
+                    &msg.payload,
+                    new_panes,
+                    force_render,
+                    input_events,
+                );
             }
             protocol::MSG_RESIZE => {
                 handle_resize(state, cid, &msg.payload);
@@ -474,7 +479,10 @@ fn handle_identify(
             send_to_client(
                 state,
                 cid,
-                &Message::new(protocol::MSG_ERROR, format!("session not found: {session_name}").into_bytes()),
+                &Message::new(
+                    protocol::MSG_ERROR,
+                    format!("session not found: {session_name}").into_bytes(),
+                ),
             );
             return Err(());
         }
@@ -486,7 +494,10 @@ fn handle_identify(
                 send_to_client(
                     state,
                     cid,
-                    &Message::new(protocol::MSG_ERROR, format!("duplicate session: {name}").into_bytes()),
+                    &Message::new(
+                        protocol::MSG_ERROR,
+                        format!("duplicate session: {name}").into_bytes(),
+                    ),
                 );
                 return Err(());
             }
@@ -560,14 +571,22 @@ fn handle_attach(
         if let Some(&sid) = state.sessions.keys().next() {
             sid
         } else {
-            send_to_client(state, cid, &Message::new(protocol::MSG_ERROR, b"no sessions".to_vec()));
+            send_to_client(
+                state,
+                cid,
+                &Message::new(protocol::MSG_ERROR, b"no sessions".to_vec()),
+            );
             return Err(());
         }
     } else {
-        send_to_client(state, cid, &Message::new(
-            protocol::MSG_ERROR,
-            format!("session not found: {session_name}").into_bytes(),
-        ));
+        send_to_client(
+            state,
+            cid,
+            &Message::new(
+                protocol::MSG_ERROR,
+                format!("session not found: {session_name}").into_bytes(),
+            ),
+        );
         return Err(());
     };
 
@@ -589,15 +608,9 @@ fn create_session(
     let pane_sy = sy.saturating_sub(1); // status bar
 
     let socket_path = protocol::socket_path();
-    let (master, child_pid) = crate::pty::spawn_shell(
-        sx,
-        pane_sy,
-        None,
-        &socket_path,
-        std::process::id(),
-        pid.0,
-    )
-    .map_err(|_| ())?;
+    let (master, child_pid) =
+        crate::pty::spawn_shell(sx, pane_sy, None, &socket_path, std::process::id(), pid.0)
+            .map_err(|_| ())?;
 
     let pane = crate::state::Pane::new(pid, master, child_pid, sx, pane_sy);
     state.panes.insert(pid, pane);
@@ -791,13 +804,7 @@ fn handle_pane_data(
     let master_fd = pane.pty_master;
 
     let mut buf = [0u8; 16384];
-    let n = unsafe {
-        libc::read(
-            master_fd,
-            buf.as_mut_ptr() as *mut libc::c_void,
-            buf.len(),
-        )
-    };
+    let n = unsafe { libc::read(master_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
     if n <= 0 {
         return;
     }
@@ -805,10 +812,7 @@ fn handle_pane_data(
     let data = &buf[..n as usize];
 
     // Process VT100 escape sequences
-    let actions = vt::process_pane_output(
-        state.panes.get_mut(&pid).unwrap(),
-        data,
-    );
+    let actions = vt::process_pane_output(state.panes.get_mut(&pid).unwrap(), data);
 
     // Handle actions
     for action in actions {
@@ -830,12 +834,11 @@ fn handle_pane_data(
                 // Update window name if this is the active pane
                 if let Some(pane) = state.panes.get(&pid) {
                     let wid = pane.window;
-                    if let Some(window) = state.windows.get(&wid) {
-                        if window.active_pane == pid {
-                            if let Some(window) = state.windows.get_mut(&wid) {
-                                window.name = title;
-                            }
-                        }
+                    if let Some(window) = state.windows.get(&wid)
+                        && window.active_pane == pid
+                        && let Some(window) = state.windows.get_mut(&wid)
+                    {
+                        window.name = title;
                     }
                 }
             }
@@ -843,7 +846,7 @@ fn handle_pane_data(
                 // Forward OSC 52 to all clients viewing this pane
                 let osc = format!("\x1b]52;c;{data}\x07");
                 for client in state.clients.values() {
-                    let _ = tty.write_raw(osc.as_bytes());
+                    tty.write_raw(osc.as_bytes());
                     let _ = tty.flush_to(client.tty_fd);
                 }
             }
@@ -961,7 +964,7 @@ fn render_all_clients(state: &mut State, config: &Config, tty: &mut TtyWriter) {
         if state
             .clients
             .get(&cid)
-            .map_or(true, |c| c.session.0 == u32::MAX)
+            .is_none_or(|c| c.session.0 == u32::MAX)
         {
             continue;
         }

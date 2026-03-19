@@ -49,7 +49,7 @@ pub fn process_input(
     let prefix_active = client.prefix_active;
 
     // Check repeat deadline
-    let in_repeat = client.repeat_deadline.map_or(false, |d| Instant::now() < d);
+    let in_repeat = client.repeat_deadline.is_some_and(|d| Instant::now() < d);
 
     match event {
         InputEvent::Key(key) => {
@@ -60,13 +60,11 @@ pub fn process_input(
                 }
 
                 if let Some(binding) = config.find_binding(key) {
-                    let action = binding.action.clone();
+                    let action = binding.action;
                     let repeat = binding.repeat;
-                    if repeat {
-                        if let Some(client) = state.clients.get_mut(&cid) {
-                            let timeout = std::time::Duration::from_millis(config.repeat_time);
-                            client.repeat_deadline = Some(Instant::now() + timeout);
-                        }
+                    if repeat && let Some(client) = state.clients.get_mut(&cid) {
+                        let timeout = std::time::Duration::from_millis(config.repeat_time);
+                        client.repeat_deadline = Some(Instant::now() + timeout);
                     }
                     return dispatch_action(state, config, cid, action);
                 }
@@ -85,15 +83,15 @@ pub fn process_input(
 
             // In repeat window — check if key matches a repeat binding
             if in_repeat {
-                if let Some(binding) = config.find_binding(key) {
-                    if binding.repeat {
-                        let action = binding.action.clone();
-                        if let Some(client) = state.clients.get_mut(&cid) {
-                            let timeout = std::time::Duration::from_millis(config.repeat_time);
-                            client.repeat_deadline = Some(Instant::now() + timeout);
-                        }
-                        return dispatch_action(state, config, cid, action);
+                if let Some(binding) = config.find_binding(key)
+                    && binding.repeat
+                {
+                    let action = binding.action;
+                    if let Some(client) = state.clients.get_mut(&cid) {
+                        let timeout = std::time::Duration::from_millis(config.repeat_time);
+                        client.repeat_deadline = Some(Instant::now() + timeout);
                     }
+                    return dispatch_action(state, config, cid, action);
                 }
                 // Not a repeat binding — cancel repeat mode and forward key
                 if let Some(client) = state.clients.get_mut(&cid) {
@@ -114,7 +112,7 @@ pub fn process_input(
         InputEvent::Paste(data) => {
             if let Some(pid) = state.active_pane_for_client(cid) {
                 let pane = state.panes.get(&pid);
-                let bracketed = pane.map_or(false, |p| {
+                let bracketed = pane.is_some_and(|p| {
                     p.active_screen()
                         .mode
                         .has(crate::screen::ScreenMode::BRACKETED_PASTE)
@@ -136,7 +134,7 @@ pub fn process_input(
             // Forward focus events to active pane if it requested them
             if let Some(pid) = state.active_pane_for_client(cid) {
                 let pane = state.panes.get(&pid);
-                let wants_focus = pane.map_or(false, |p| {
+                let wants_focus = pane.is_some_and(|p| {
                     p.active_screen()
                         .mode
                         .has(crate::screen::ScreenMode::FOCUS_EVENTS)
@@ -248,9 +246,7 @@ fn dispatch_action(
             focus_direction(state, cid, 1, 0);
             InputResult::Redraw
         }
-        Action::ReloadConfig => {
-            InputResult::StatusMessage("configuration reloaded".to_string())
-        }
+        Action::ReloadConfig => InputResult::StatusMessage("configuration reloaded".to_string()),
         Action::CommandPrompt => {
             if let Some(client) = state.clients.get_mut(&cid) {
                 client.mode = ClientMode::CommandPrompt;
@@ -329,14 +325,14 @@ fn select_window_by_idx(state: &mut State, cid: ClientId, idx: u32) {
         return;
     };
     for &wid in &session.windows {
-        if let Some(w) = state.windows.get(&wid) {
-            if w.idx == idx {
-                if let Some(session) = state.sessions.get_mut(&sid) {
-                    session.active_window = wid;
-                }
-                mark_all_dirty(state);
-                return;
+        if let Some(w) = state.windows.get(&wid)
+            && w.idx == idx
+        {
+            if let Some(session) = state.sessions.get_mut(&sid) {
+                session.active_window = wid;
             }
+            mark_all_dirty(state);
+            return;
         }
     }
 }
@@ -362,7 +358,11 @@ fn swap_window(state: &mut State, cid: ClientId, delta: i32) {
     state.renumber_windows(sid);
 }
 
-pub fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir) -> Option<PaneId> {
+pub fn split_pane(
+    state: &mut State,
+    cid: ClientId,
+    dir: crate::layout::SplitDir,
+) -> Option<PaneId> {
     let wid = state.active_window_for_client(cid)?;
     let pid = state.active_pane_for_client(cid)?;
 
@@ -377,8 +377,14 @@ pub fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir
         .unwrap_or((80, 24));
 
     let (master, child_pid) = crate::pty::spawn_shell(
-        sx, sy, cwd.as_deref(), &socket_path, std::process::id(), new_pid.0,
-    ).ok()?;
+        sx,
+        sy,
+        cwd.as_deref(),
+        &socket_path,
+        std::process::id(),
+        new_pid.0,
+    )
+    .ok()?;
 
     let pane = crate::state::Pane::new(new_pid, master, child_pid, sx, sy);
     state.panes.insert(new_pid, pane);
@@ -412,7 +418,9 @@ pub fn recalc_layout(state: &mut State, wid: WindowId) {
                 pane.screen.resize(geo.sx, geo.sy);
                 pane.alt_screen.resize(geo.sx, geo.sy);
                 let _ = crate::sys::set_winsize(pane.pty_master, geo.sx, geo.sy);
-                unsafe { libc::killpg(pane.pid, libc::SIGWINCH); }
+                unsafe {
+                    libc::killpg(pane.pid, libc::SIGWINCH);
+                }
             }
             pane.flags |= crate::state::PaneFlags::REDRAW;
         }
@@ -528,10 +536,10 @@ fn focus_direction(state: &mut State, cid: ClientId, dx: i32, dy: i32) {
         }
     }
 
-    if let Some(new_pid) = best {
-        if let Some(window) = state.windows.get_mut(&wid) {
-            window.active_pane = new_pid;
-        }
+    if let Some(new_pid) = best
+        && let Some(window) = state.windows.get_mut(&wid)
+    {
+        window.active_pane = new_pid;
     }
 }
 
@@ -643,20 +651,20 @@ fn process_prompt_input(
     }
 
     if base == KeyCode::BACKSPACE {
-        if let Some(client) = state.clients.get_mut(&cid) {
-            if let Some(buf) = &mut client.prompt_buf {
-                buf.pop();
-            }
+        if let Some(client) = state.clients.get_mut(&cid)
+            && let Some(buf) = &mut client.prompt_buf
+        {
+            buf.pop();
         }
         return InputResult::Redraw;
     }
 
     // Printable character
-    if base >= 0x20 && base < 0x7F && !key.has_ctrl() && !key.has_meta() {
-        if let Some(client) = state.clients.get_mut(&cid) {
-            if let Some(buf) = &mut client.prompt_buf {
-                buf.push(base as u8 as char);
-            }
+    if (0x20..0x7F).contains(&base) && !key.has_ctrl() && !key.has_meta() {
+        if let Some(client) = state.clients.get_mut(&cid)
+            && let Some(buf) = &mut client.prompt_buf
+        {
+            buf.push(base as u8 as char);
         }
         return InputResult::Redraw;
     }
@@ -680,12 +688,11 @@ fn execute_prompt(
             create_new_window(state, cid, &name)
         }
         Some(PromptAction::RenameWindow) => {
-            if !input.is_empty() {
-                if let Some(wid) = state.active_window_for_client(cid) {
-                    if let Some(window) = state.windows.get_mut(&wid) {
-                        window.name = input.to_string();
-                    }
-                }
+            if !input.is_empty()
+                && let Some(wid) = state.active_window_for_client(cid)
+                && let Some(window) = state.windows.get_mut(&wid)
+            {
+                window.name = input.to_string();
             }
             InputResult::Redraw
         }
@@ -782,13 +789,10 @@ fn move_pane_to_window(state: &mut State, cid: ClientId, target_idx: u32) {
         return;
     };
     let target_wid = session.windows.iter().find_map(|&wid| {
-        state.windows.get(&wid).and_then(|w| {
-            if w.idx == target_idx {
-                Some(wid)
-            } else {
-                None
-            }
-        })
+        state
+            .windows
+            .get(&wid)
+            .and_then(|w| if w.idx == target_idx { Some(wid) } else { None })
     });
     let Some(target_wid) = target_wid else { return };
     if target_wid == old_wid {
@@ -808,11 +812,9 @@ fn move_pane_to_window(state: &mut State, cid: ClientId, target_idx: u32) {
     // Add to target window
     if let Some(window) = state.windows.get_mut(&target_wid) {
         window.panes.push(pid);
-        window.layout.split_pane(
-            window.active_pane,
-            pid,
-            crate::layout::SplitDir::Horizontal,
-        );
+        window
+            .layout
+            .split_pane(window.active_pane, pid, crate::layout::SplitDir::Horizontal);
         window.active_pane = pid;
     }
 
@@ -829,12 +831,11 @@ fn execute_command(state: &mut State, cid: ClientId, input: &str) -> InputResult
     match parts.first().copied() {
         Some("rename-window") => {
             let name = parts.get(1).unwrap_or(&"");
-            if !name.is_empty() {
-                if let Some(wid) = state.active_window_for_client(cid) {
-                    if let Some(window) = state.windows.get_mut(&wid) {
-                        window.name = name.to_string();
-                    }
-                }
+            if !name.is_empty()
+                && let Some(wid) = state.active_window_for_client(cid)
+                && let Some(window) = state.windows.get_mut(&wid)
+            {
+                window.name = name.to_string();
             }
             InputResult::Redraw
         }
@@ -900,7 +901,12 @@ fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
     InputResult::Redraw
 }
 
-fn process_copy_input(state: &mut State, config: &Config, cid: ClientId, event: InputEvent) -> InputResult {
+fn process_copy_input(
+    state: &mut State,
+    config: &Config,
+    cid: ClientId,
+    event: InputEvent,
+) -> InputResult {
     match event {
         InputEvent::Key(_) => {
             exit_copy_mode(state, cid);
@@ -946,13 +952,11 @@ fn process_mouse(
                 return InputResult::None;
             };
             let geos = window.layout.calculate(0, 0, window.sx, window.sy);
-            if let Some(pid) = crate::layout::LayoutNode::pane_at(
-                &window.layout, &geos, x, y,
-            ) {
-                if let Some(window) = state.windows.get_mut(&wid) {
-                    if window.active_pane != pid {
-                        window.active_pane = pid;
-                    }
+            if let Some(pid) = crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y) {
+                if let Some(window) = state.windows.get_mut(&wid)
+                    && window.active_pane != pid
+                {
+                    window.active_pane = pid;
                 }
                 if let Some(pane) = state.panes.get(&pid) {
                     let local_col = x.saturating_sub(pane.xoff);
@@ -984,10 +988,8 @@ fn process_mouse(
             let pid = sel.pane;
 
             // Enter copy mode if not already in it
-            if client.mode != ClientMode::CopyMode {
-                if !pane_wants_mouse(state, pid) {
-                    enter_copy_mode(state, cid, pid);
-                }
+            if client.mode != ClientMode::CopyMode && !pane_wants_mouse(state, pid) {
+                enter_copy_mode(state, cid, pid);
             }
 
             if let Some(pane) = state.panes.get(&pid) {
@@ -995,11 +997,11 @@ fn process_mouse(
                 let local_row = y.saturating_sub(pane.yoff).min(pane.sy.saturating_sub(1));
                 let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
                 let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
-                if let Some(client) = state.clients.get_mut(&cid) {
-                    if let Some(sel) = &mut client.sel {
-                        sel.end_col = local_col;
-                        sel.end_row = abs_row;
-                    }
+                if let Some(client) = state.clients.get_mut(&cid)
+                    && let Some(sel) = &mut client.sel
+                {
+                    sel.end_col = local_col;
+                    sel.end_row = abs_row;
                 }
                 return InputResult::Redraw;
             }
@@ -1020,7 +1022,10 @@ fn process_mouse(
             let text = extract_selection(state, pid, &sel);
 
             // Clear selection and exit copy mode (full redraw)
-            let was_copy = state.clients.get(&cid).map_or(false, |c| c.mode == ClientMode::CopyMode);
+            let was_copy = state
+                .clients
+                .get(&cid)
+                .is_some_and(|c| c.mode == ClientMode::CopyMode);
             if let Some(client) = state.clients.get_mut(&cid) {
                 client.sel = None;
             }
@@ -1037,11 +1042,7 @@ fn process_mouse(
                 let b64 = base64_encode(text.as_bytes());
                 let osc = format!("\x1b]52;c;{b64}\x07");
                 unsafe {
-                    libc::write(
-                        tty_fd,
-                        osc.as_ptr() as *const libc::c_void,
-                        osc.len(),
-                    );
+                    libc::write(tty_fd, osc.as_ptr() as *const libc::c_void, osc.len());
                 }
             }
             InputResult::Redraw
@@ -1121,7 +1122,7 @@ pub fn extract_selection(state: &State, pid: PaneId, sel: &crate::state::Selecti
 
 fn base64_encode(data: &[u8]) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as u32;
         let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
@@ -1183,7 +1184,7 @@ fn click_status_bar(state: &mut State, cid: ClientId, x: u32) -> InputResult {
 }
 
 fn pane_wants_mouse(state: &State, pid: PaneId) -> bool {
-    state.panes.get(&pid).map_or(false, |p| {
+    state.panes.get(&pid).is_some_and(|p| {
         let mode = p.active_screen().mode;
         p.is_alt_screen()
             || mode.has(crate::screen::ScreenMode::MOUSE_BUTTON)
@@ -1195,8 +1196,7 @@ fn find_pane_at(state: &State, cid: ClientId, x: u32, y: u32) -> Option<PaneId> 
     let wid = state.active_window_for_client(cid)?;
     let window = state.windows.get(&wid)?;
     let geos = window.layout.calculate(0, 0, window.sx, window.sy);
-    crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y)
-        .or(Some(window.active_pane))
+    crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y).or(Some(window.active_pane))
 }
 
 fn forward_mouse_to_pane(state: &State, pid: PaneId, mouse: &MouseEvent) -> InputResult {
@@ -1269,7 +1269,7 @@ fn key_to_bytes(key: KeyCode, state: &State, cid: ClientId) -> Vec<u8> {
     let app_cursor = state
         .active_pane_for_client(cid)
         .and_then(|pid| state.panes.get(&pid))
-        .map_or(false, |p| p.active_screen().mode.has(0x1000));
+        .is_some_and(|p| p.active_screen().mode.has(0x1000));
 
     let arrow_prefix = if app_cursor { b"\x1bO" } else { b"\x1b[" };
 
@@ -1679,7 +1679,9 @@ mod tests {
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
         for (i, ch) in b"Hello".iter().enumerate() {
             let content = CellContent::from_ascii(*ch);
-            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &content);
         }
 
         let hsize = state.panes[&pid].screen.grid.hsize();
@@ -2013,10 +2015,7 @@ mod tests {
             InputEvent::Key(KeyCode::char('i')),
         );
 
-        assert_eq!(
-            state.clients[&cid].prompt_buf.as_deref(),
-            Some("hi")
-        );
+        assert_eq!(state.clients[&cid].prompt_buf.as_deref(), Some("hi"));
     }
 
     #[test]
@@ -2037,10 +2036,7 @@ mod tests {
             InputEvent::Key(KeyCode(KeyCode::BACKSPACE)),
         );
 
-        assert_eq!(
-            state.clients[&cid].prompt_buf.as_deref(),
-            Some("ab")
-        );
+        assert_eq!(state.clients[&cid].prompt_buf.as_deref(), Some("ab"));
     }
 
     #[test]
@@ -2084,10 +2080,7 @@ mod tests {
             InputEvent::Key(KeyCode::ctrl('x')),
         );
         assert!(is_none(&result));
-        assert_eq!(
-            state.clients[&cid].prompt_buf.as_deref(),
-            Some("")
-        );
+        assert_eq!(state.clients[&cid].prompt_buf.as_deref(), Some(""));
     }
 
     #[test]
@@ -2214,14 +2207,8 @@ mod tests {
     fn key_to_bytes_function_keys() {
         let (state, _config, cid, _pid, _wid, _sid) = setup();
 
-        assert_eq!(
-            key_to_bytes(KeyCode(KeyCode::F1), &state, cid),
-            b"\x1bOP"
-        );
-        assert_eq!(
-            key_to_bytes(KeyCode(KeyCode::F5), &state, cid),
-            b"\x1b[15~"
-        );
+        assert_eq!(key_to_bytes(KeyCode(KeyCode::F1), &state, cid), b"\x1bOP");
+        assert_eq!(key_to_bytes(KeyCode(KeyCode::F5), &state, cid), b"\x1b[15~");
         assert_eq!(
             key_to_bytes(KeyCode(KeyCode::F12), &state, cid),
             b"\x1b[24~"

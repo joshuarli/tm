@@ -30,9 +30,9 @@ fn log_path() -> std::path::PathBuf {
 }
 
 pub fn log(msg: &str) {
-    if let Ok(mut guard) = LOG_FILE.lock() {
-        if let Some(f) = guard.as_mut() {
-            let _ = writeln!(f, "{msg}");
-        }
+    if let Ok(mut guard) = LOG_FILE.lock()
+        && let Some(f) = guard.as_mut()
+    {
+        let _ = writeln!(f, "{msg}");
     }
 }

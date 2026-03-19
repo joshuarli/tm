@@ -72,7 +72,7 @@ impl SimdScanner {
         // Scalar tail
         while pos < len {
             let b = buf[pos];
-            if b < 0x20 || b >= 0x7F {
+            if !(0x20..0x7F).contains(&b) {
                 return pos;
             }
             pos += 1;
@@ -83,13 +83,15 @@ impl SimdScanner {
     #[cfg(target_arch = "aarch64")]
     #[inline]
     unsafe fn find_first_zero(v: core::arch::aarch64::uint8x16_t) -> usize {
-        use core::arch::aarch64::*;
-        // Narrow 16×u8 to 8×u8 nibbles, find first zero nibble
-        let narrowed = vshrn_n_u16::<4>(vreinterpretq_u16_u8(v));
-        let bits = vget_lane_u64::<0>(vreinterpret_u64_u8(narrowed));
-        let zero_mask =
-            bits.wrapping_sub(0x1111_1111_1111_1111) & !bits & 0x8888_8888_8888_8888;
-        (zero_mask.trailing_zeros() / 4) as usize
+        unsafe {
+            use core::arch::aarch64::*;
+            // Narrow 16×u8 to 8×u8 nibbles, find first zero nibble
+            let narrowed = vshrn_n_u16::<4>(vreinterpretq_u16_u8(v));
+            let bits = vget_lane_u64::<0>(vreinterpret_u64_u8(narrowed));
+            let zero_mask =
+                bits.wrapping_sub(0x1111_1111_1111_1111) & !bits & 0x8888_8888_8888_8888;
+            (zero_mask.trailing_zeros() / 4) as usize
+        }
     }
 
     /// SSE2 implementation for x86_64 (SSE2 is baseline — always available).
@@ -112,10 +114,30 @@ impl SimdScanner {
             // 64 bytes at a time (4 × 16 unrolled)
             while pos + 64 <= len {
                 let ptr = buf.as_ptr().add(pos);
-                let ok0 = Self::is_printable_sse2(_mm_loadu_si128(ptr as *const __m128i), bias, flip, lim);
-                let ok1 = Self::is_printable_sse2(_mm_loadu_si128(ptr.add(16) as *const __m128i), bias, flip, lim);
-                let ok2 = Self::is_printable_sse2(_mm_loadu_si128(ptr.add(32) as *const __m128i), bias, flip, lim);
-                let ok3 = Self::is_printable_sse2(_mm_loadu_si128(ptr.add(48) as *const __m128i), bias, flip, lim);
+                let ok0 = Self::is_printable_sse2(
+                    _mm_loadu_si128(ptr as *const __m128i),
+                    bias,
+                    flip,
+                    lim,
+                );
+                let ok1 = Self::is_printable_sse2(
+                    _mm_loadu_si128(ptr.add(16) as *const __m128i),
+                    bias,
+                    flip,
+                    lim,
+                );
+                let ok2 = Self::is_printable_sse2(
+                    _mm_loadu_si128(ptr.add(32) as *const __m128i),
+                    bias,
+                    flip,
+                    lim,
+                );
+                let ok3 = Self::is_printable_sse2(
+                    _mm_loadu_si128(ptr.add(48) as *const __m128i),
+                    bias,
+                    flip,
+                    lim,
+                );
 
                 let all = _mm_and_si128(_mm_and_si128(ok0, ok1), _mm_and_si128(ok2, ok3));
                 if _mm_movemask_epi8(all) == 0xFFFF {
@@ -124,13 +146,19 @@ impl SimdScanner {
                 }
 
                 let m0 = _mm_movemask_epi8(ok0) as u32;
-                if m0 != 0xFFFF { return pos + (!m0 & 0xFFFF).trailing_zeros() as usize; }
+                if m0 != 0xFFFF {
+                    return pos + (!m0 & 0xFFFF).trailing_zeros() as usize;
+                }
                 pos += 16;
                 let m1 = _mm_movemask_epi8(ok1) as u32;
-                if m1 != 0xFFFF { return pos + (!m1 & 0xFFFF).trailing_zeros() as usize; }
+                if m1 != 0xFFFF {
+                    return pos + (!m1 & 0xFFFF).trailing_zeros() as usize;
+                }
                 pos += 16;
                 let m2 = _mm_movemask_epi8(ok2) as u32;
-                if m2 != 0xFFFF { return pos + (!m2 & 0xFFFF).trailing_zeros() as usize; }
+                if m2 != 0xFFFF {
+                    return pos + (!m2 & 0xFFFF).trailing_zeros() as usize;
+                }
                 pos += 16;
                 let m3 = _mm_movemask_epi8(ok3) as u32;
                 return pos + (!m3 & 0xFFFF).trailing_zeros() as usize;
@@ -140,7 +168,9 @@ impl SimdScanner {
             while pos + 16 <= len {
                 let ok = Self::is_printable_sse2(
                     _mm_loadu_si128(buf.as_ptr().add(pos) as *const __m128i),
-                    bias, flip, lim,
+                    bias,
+                    flip,
+                    lim,
                 );
                 let m = _mm_movemask_epi8(ok) as u32;
                 if m == 0xFFFF {
@@ -154,7 +184,9 @@ impl SimdScanner {
         // Scalar tail
         while pos < len {
             let b = buf[pos];
-            if b < 0x20 || b >= 0x7F { return pos; }
+            if b < 0x20 || b >= 0x7F {
+                return pos;
+            }
             pos += 1;
         }
         pos

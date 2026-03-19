@@ -50,12 +50,7 @@ pub fn spawn_shell(
 
 fn child_exec(cwd: Option<&str>, socket_path: &Path, server_pid: u32, pane_id: u32) -> ! {
     // Set environment variables
-    let tm_val = format!(
-        "{},{},{}",
-        socket_path.display(),
-        server_pid,
-        pane_id
-    );
+    let tm_val = format!("{},{},{}", socket_path.display(), server_pid, pane_id);
 
     unsafe {
         let key = CString::new("TERM").unwrap();
@@ -71,11 +66,11 @@ fn child_exec(cwd: Option<&str>, socket_path: &Path, server_pid: u32, pane_id: u
     }
 
     // Change directory
-    if let Some(dir) = cwd {
-        if let Ok(dir) = CString::new(dir) {
-            unsafe {
-                libc::chdir(dir.as_ptr());
-            }
+    if let Some(dir) = cwd
+        && let Ok(dir) = CString::new(dir)
+    {
+        unsafe {
+            libc::chdir(dir.as_ptr());
         }
     }
 

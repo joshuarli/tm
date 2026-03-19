@@ -189,7 +189,10 @@ pub fn recv_fd(sock: RawFd) -> io::Result<Option<RawFd>> {
             break r;
         };
         if ret == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "connection closed"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "connection closed",
+            ));
         }
 
         let cmsg = libc::CMSG_FIRSTHDR(&msg);
@@ -208,6 +211,19 @@ pub fn recv_fd(sock: RawFd) -> io::Result<Option<RawFd>> {
         );
         Ok(Some(fd))
     }
+}
+
+/// Get the socket path.
+pub fn socket_path() -> std::path::PathBuf {
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return std::path::PathBuf::from(dir).join("tm/default");
+    }
+    if let Some(dir) = std::env::var_os("TMPDIR") {
+        let uid = unsafe { libc::getuid() };
+        return std::path::PathBuf::from(dir).join(format!("tm-{uid}/default"));
+    }
+    let uid = unsafe { libc::getuid() };
+    std::path::PathBuf::from(format!("/tmp/tm-{uid}/default"))
 }
 
 #[cfg(test)]
@@ -282,7 +298,8 @@ mod tests {
     fn test_send_recv_fd() {
         // Create a Unix socket pair and pass an fd through it
         let mut fds = [0i32; 2];
-        let ret = unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
+        let ret =
+            unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) };
         assert_eq!(ret, 0);
 
         // Create a pipe — we'll pass the read end through the socket
@@ -293,7 +310,11 @@ mod tests {
         // Write something to the pipe so we can verify the received fd works
         let data = b"hello";
         unsafe {
-            libc::write(pipe_fds[1], data.as_ptr() as *const libc::c_void, data.len());
+            libc::write(
+                pipe_fds[1],
+                data.as_ptr() as *const libc::c_void,
+                data.len(),
+            );
         }
 
         // Send the pipe read end through the socket
@@ -306,36 +327,30 @@ mod tests {
 
         // Read from the received fd — should get "hello"
         let mut buf = [0u8; 16];
-        let n = unsafe { libc::read(received_fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        let n = unsafe {
+            libc::read(
+                received_fd,
+                buf.as_mut_ptr() as *mut libc::c_void,
+                buf.len(),
+            )
+        };
         assert_eq!(n, 5);
         assert_eq!(&buf[..5], b"hello");
 
         // Clean up
         for fd in [fds[0], fds[1], pipe_fds[0], pipe_fds[1], received_fd] {
-            unsafe { libc::close(fd); }
+            unsafe {
+                libc::close(fd);
+            }
         }
     }
 
     #[test]
     fn test_cmsg_alignment() {
         // Verify our CmsgFd struct matches CMSG_SPACE
-        let cmsg_space = unsafe {
-            libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32)
-        } as usize;
+        let cmsg_space =
+            unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as u32) } as usize;
         assert!(std::mem::size_of::<CmsgFd>() >= cmsg_space);
         assert!(std::mem::align_of::<CmsgFd>() >= std::mem::align_of::<libc::cmsghdr>());
     }
-}
-
-/// Get the socket path.
-pub fn socket_path() -> std::path::PathBuf {
-    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
-        return std::path::PathBuf::from(dir).join("tm/default");
-    }
-    if let Some(dir) = std::env::var_os("TMPDIR") {
-        let uid = unsafe { libc::getuid() };
-        return std::path::PathBuf::from(dir).join(format!("tm-{uid}/default"));
-    }
-    let uid = unsafe { libc::getuid() };
-    std::path::PathBuf::from(format!("/tmp/tm-{uid}/default"))
 }

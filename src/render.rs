@@ -34,9 +34,21 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
 
     // Render panes
     if let Some(zoomed_pid) = window.zoomed {
-        let oy = copy_oy.and_then(|(p, o)| if p == zoomed_pid { Some(o) } else { None }).unwrap_or(0);
+        let oy = copy_oy
+            .and_then(|(p, o)| if p == zoomed_pid { Some(o) } else { None })
+            .unwrap_or(0);
         let pane_sel = sel.filter(|s| s.pane == zoomed_pid);
-        render_pane(state, zoomed_pid, 0, 0, sx, status_row, oy, pane_sel.as_ref(), tty);
+        render_pane(
+            state,
+            zoomed_pid,
+            0,
+            0,
+            sx,
+            status_row,
+            oy,
+            pane_sel.as_ref(),
+            tty,
+        );
     } else {
         let geos = window.layout.calculate(0, 0, window.sx, window.sy);
 
@@ -45,14 +57,34 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
 
         // Render each pane
         for geo in &geos {
-            let oy = copy_oy.and_then(|(p, o)| if p == geo.id { Some(o) } else { None }).unwrap_or(0);
+            let oy = copy_oy
+                .and_then(|(p, o)| if p == geo.id { Some(o) } else { None })
+                .unwrap_or(0);
             let pane_sel = sel.filter(|s| s.pane == geo.id);
-            render_pane(state, geo.id, geo.xoff, geo.yoff, geo.sx, geo.sy, oy, pane_sel.as_ref(), tty);
+            render_pane(
+                state,
+                geo.id,
+                geo.xoff,
+                geo.yoff,
+                geo.sx,
+                geo.sy,
+                oy,
+                pane_sel.as_ref(),
+                tty,
+            );
         }
     }
 
     // Render status bar
-    render_status(state, config, cid, session.active_window, status_row, sx, tty);
+    render_status(
+        state,
+        config,
+        cid,
+        session.active_window,
+        status_row,
+        sx,
+        tty,
+    );
 
     // Position cursor at active pane's cursor
     let active_pid = window.active_pane;
@@ -73,6 +105,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
     tty.sync_end();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_pane(
     state: &State,
     pid: PaneId,
@@ -89,9 +122,8 @@ fn render_pane(
     };
     let screen = pane.active_screen();
     let grid = &screen.grid;
-    let force = pane.flags.contains(crate::state::PaneFlags::REDRAW)
-        || copy_oy > 0
-        || sel.is_some();
+    let force =
+        pane.flags.contains(crate::state::PaneFlags::REDRAW) || copy_oy > 0 || sel.is_some();
 
     // Pre-compute selection range
     let sel_range = sel.map(|s| s.ordered());
@@ -115,11 +147,7 @@ fn render_pane(
         };
 
         if !force {
-            let any_dirty = line
-                .compact
-                .iter()
-                .take(sx as usize)
-                .any(|c| c.is_dirty());
+            let any_dirty = line.compact.iter().take(sx as usize).any(|c| c.is_dirty());
             if !any_dirty {
                 continue;
             }
@@ -471,7 +499,9 @@ mod tests {
         state.panes.insert(pid, pane);
         let sid = state.create_session("test", pid, 80, 25);
         let cid = state.alloc_client_id();
-        state.clients.insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+        state
+            .clients
+            .insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
         (state, cid)
     }
 

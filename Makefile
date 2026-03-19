@@ -44,3 +44,9 @@ test:
 
 install: release-pgo
 	cp target/$(TARGET)/release/$(NAME) ~/usr/bin/$(NAME)
+
+setup:
+	prek install --install-hooks
+
+pc:
+	prek --quiet run --all-files

@@ -33,14 +33,7 @@ impl LayoutNode {
         result
     }
 
-    fn calculate_inner(
-        &self,
-        xoff: u32,
-        yoff: u32,
-        sx: u32,
-        sy: u32,
-        out: &mut Vec<PaneGeometry>,
-    ) {
+    fn calculate_inner(&self, xoff: u32, yoff: u32, sx: u32, sy: u32, out: &mut Vec<PaneGeometry>) {
         match self {
             LayoutNode::Pane(id) => {
                 out.push(PaneGeometry {
@@ -127,12 +120,7 @@ impl LayoutNode {
     }
 
     /// Split a pane. Returns the new layout with the added pane.
-    pub fn split_pane(
-        &mut self,
-        target: PaneId,
-        new_pane: PaneId,
-        dir: SplitDir,
-    ) -> bool {
+    pub fn split_pane(&mut self, target: PaneId, new_pane: PaneId, dir: SplitDir) -> bool {
         match self {
             LayoutNode::Pane(id) if *id == target => {
                 // Replace this pane with a split containing both panes
@@ -144,10 +132,15 @@ impl LayoutNode {
                 };
                 true
             }
-            LayoutNode::Split { dir: split_dir, children } => {
+            LayoutNode::Split {
+                dir: split_dir,
+                children,
+            } => {
                 // Check if target is a direct child and the split direction matches
                 if *split_dir == dir {
-                    let idx = children.iter().position(|c| matches!(c, LayoutNode::Pane(id) if *id == target));
+                    let idx = children
+                        .iter()
+                        .position(|c| matches!(c, LayoutNode::Pane(id) if *id == target));
                     if let Some(idx) = idx {
                         // Insert new pane after the target in the same split
                         children.insert(idx + 1, LayoutNode::Pane(new_pane));
@@ -195,11 +188,7 @@ impl LayoutNode {
     /// Find the pane at a given position.
     pub fn pane_at(&self, geos: &[PaneGeometry], x: u32, y: u32) -> Option<PaneId> {
         for geo in geos {
-            if x >= geo.xoff
-                && x < geo.xoff + geo.sx
-                && y >= geo.yoff
-                && y < geo.yoff + geo.sy
-            {
+            if x >= geo.xoff && x < geo.xoff + geo.sx && y >= geo.yoff && y < geo.yoff + geo.sy {
                 return Some(geo.id);
             }
         }

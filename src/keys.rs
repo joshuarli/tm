@@ -63,28 +63,11 @@ impl KeyCode {
 /// Mouse event types.
 #[derive(Clone, Copy, Debug)]
 pub enum MouseEvent {
-    Press {
-        button: u8,
-        x: u32,
-        y: u32,
-    },
-    Release {
-        x: u32,
-        y: u32,
-    },
-    Drag {
-        button: u8,
-        x: u32,
-        y: u32,
-    },
-    WheelUp {
-        x: u32,
-        y: u32,
-    },
-    WheelDown {
-        x: u32,
-        y: u32,
-    },
+    Press { button: u8, x: u32, y: u32 },
+    Release { x: u32, y: u32 },
+    Drag { button: u8, x: u32, y: u32 },
+    WheelUp { x: u32, y: u32 },
+    WheelDown { x: u32, y: u32 },
 }
 
 /// Parsed input event.
@@ -157,30 +140,29 @@ pub fn parse_input_into(buf: &[u8], events: &mut Vec<InputEvent>) -> usize {
                     continue;
                 }
                 // Could be incomplete — wait if no final M/m found
-                if !remaining[3..]
-                    .iter()
-                    .any(|&b| b == b'M' || b == b'm')
-                {
+                if !remaining[3..].iter().any(|&b| b == b'M' || b == b'm') {
                     break;
                 }
             }
 
             // CSI sequences: ESC [ ...
-            if remaining.len() >= 3 && remaining[1] == b'[' {
-                if let Some((key, consumed)) = parse_csi_key(&remaining[2..]) {
-                    events.push(InputEvent::Key(key));
-                    pos += 2 + consumed;
-                    continue;
-                }
+            if remaining.len() >= 3
+                && remaining[1] == b'['
+                && let Some((key, consumed)) = parse_csi_key(&remaining[2..])
+            {
+                events.push(InputEvent::Key(key));
+                pos += 2 + consumed;
+                continue;
             }
 
             // SS3 sequences: ESC O ...
-            if remaining.len() >= 3 && remaining[1] == b'O' {
-                if let Some(key) = parse_ss3_key(remaining[2]) {
-                    events.push(InputEvent::Key(key));
-                    pos += 3;
-                    continue;
-                }
+            if remaining.len() >= 3
+                && remaining[1] == b'O'
+                && let Some(key) = parse_ss3_key(remaining[2])
+            {
+                events.push(InputEvent::Key(key));
+                pos += 3;
+                continue;
             }
 
             // ESC + printable = Meta + key
@@ -264,9 +246,7 @@ pub fn parse_input_into(buf: &[u8], events: &mut Vec<InputEvent>) -> usize {
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn parse_sgr_mouse(buf: &[u8]) -> Option<(MouseEvent, usize)> {
@@ -488,9 +468,18 @@ mod tests {
 
     #[test]
     fn test_parse_key_name() {
-        assert_eq!(parse_key_name("C-a"), Some(KeyCode(b'a' as u32 | KeyCode::CTRL)));
-        assert_eq!(parse_key_name("C-Left"), Some(KeyCode(KeyCode::LEFT | KeyCode::CTRL)));
-        assert_eq!(parse_key_name("S-Left"), Some(KeyCode(KeyCode::LEFT | KeyCode::SHIFT)));
+        assert_eq!(
+            parse_key_name("C-a"),
+            Some(KeyCode(b'a' as u32 | KeyCode::CTRL))
+        );
+        assert_eq!(
+            parse_key_name("C-Left"),
+            Some(KeyCode(KeyCode::LEFT | KeyCode::CTRL))
+        );
+        assert_eq!(
+            parse_key_name("S-Left"),
+            Some(KeyCode(KeyCode::LEFT | KeyCode::SHIFT))
+        );
         assert_eq!(parse_key_name("Enter"), Some(KeyCode(KeyCode::ENTER)));
         assert_eq!(parse_key_name("d"), Some(KeyCode(b'd' as u32)));
     }

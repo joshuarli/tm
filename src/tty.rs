@@ -13,6 +13,12 @@ pub struct TtyWriter {
     cur_us: Color,
 }
 
+impl Default for TtyWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TtyWriter {
     pub fn new() -> Self {
         Self {
@@ -44,7 +50,7 @@ impl TtyWriter {
     /// Move cursor to (row, col) — 0-based.
     pub fn cursor_goto(&mut self, row: u32, col: u32) {
         use std::io::Write;
-let _ = write!(self.buf, "\x1b[{};{}H", row + 1, col + 1);
+        let _ = write!(self.buf, "\x1b[{};{}H", row + 1, col + 1);
     }
 
     /// Hide cursor.
@@ -68,7 +74,7 @@ let _ = write!(self.buf, "\x1b[{};{}H", row + 1, col + 1);
             CursorStyle::Beam => 6,
         };
         use std::io::Write;
-let _ = write!(self.buf, "\x1b[{n} q");
+        let _ = write!(self.buf, "\x1b[{n} q");
     }
 
     /// Reset all attributes.
@@ -164,7 +170,8 @@ let _ = write!(self.buf, "\x1b[{n} q");
         use std::io::Write;
         match color {
             Color::Default => {
-                self.buf.extend_from_slice(if is_fg { b"\x1b[39m" } else { b"\x1b[49m" });
+                self.buf
+                    .extend_from_slice(if is_fg { b"\x1b[39m" } else { b"\x1b[49m" });
             }
             Color::Palette(idx) => {
                 if idx < 8 {
@@ -368,7 +375,11 @@ mod tests {
 
         // Call again with the same cell -- should produce no additional output
         w.set_cell_attrs(&cell);
-        assert_eq!(w.buf.len(), first_len, "repeated set_cell_attrs with same state should produce no output");
+        assert_eq!(
+            w.buf.len(),
+            first_len,
+            "repeated set_cell_attrs with same state should produce no output"
+        );
     }
 
     #[test]
@@ -381,7 +392,10 @@ mod tests {
         };
         w.set_cell_attrs(&cell);
         let out = String::from_utf8_lossy(&w.buf);
-        assert!(out.contains("\x1b[33m"), "palette 3 fg should be \\x1b[33m, got: {out}");
+        assert!(
+            out.contains("\x1b[33m"),
+            "palette 3 fg should be \\x1b[33m, got: {out}"
+        );
     }
 
     #[test]
@@ -394,7 +408,10 @@ mod tests {
         };
         w.set_cell_attrs(&cell);
         let out = String::from_utf8_lossy(&w.buf);
-        assert!(out.contains("\x1b[45m"), "palette 5 bg should be \\x1b[45m, got: {out}");
+        assert!(
+            out.contains("\x1b[45m"),
+            "palette 5 bg should be \\x1b[45m, got: {out}"
+        );
     }
 
     #[test]
@@ -407,7 +424,10 @@ mod tests {
         };
         w.set_cell_attrs(&cell);
         let out = String::from_utf8_lossy(&w.buf);
-        assert!(out.contains("\x1b[92m"), "palette 10 fg should be \\x1b[92m, got: {out}");
+        assert!(
+            out.contains("\x1b[92m"),
+            "palette 10 fg should be \\x1b[92m, got: {out}"
+        );
     }
 
     #[test]
@@ -420,7 +440,10 @@ mod tests {
         };
         w.set_cell_attrs(&cell);
         let out = String::from_utf8_lossy(&w.buf);
-        assert!(out.contains("\x1b[38;5;200m"), "palette 200 fg should use 256-color, got: {out}");
+        assert!(
+            out.contains("\x1b[38;5;200m"),
+            "palette 200 fg should use 256-color, got: {out}"
+        );
     }
 
     #[test]

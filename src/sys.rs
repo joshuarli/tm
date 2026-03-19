@@ -78,7 +78,10 @@ pub fn signal_pipe(sig: libc::c_int) -> io::Result<RawFd> {
     unsafe {
         let idx = sig as usize;
         if idx >= SIGNAL_WRITE_FDS.len() {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "signal out of range"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "signal out of range",
+            ));
         }
         SIGNAL_WRITE_FDS[idx].store(write_fd, std::sync::atomic::Ordering::Relaxed);
 
@@ -94,7 +97,9 @@ pub fn signal_pipe(sig: libc::c_int) -> io::Result<RawFd> {
     Ok(read_fd)
 }
 
+#[allow(clippy::declare_interior_mutable_const)]
 static SIGNAL_WRITE_FDS: [std::sync::atomic::AtomicI32; 32] = {
+    #[allow(clippy::declare_interior_mutable_const)]
     const INIT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
     [INIT; 32]
 };
@@ -208,13 +213,13 @@ mod tests {
         assert!(read_fd >= 0);
 
         // Send the signal to ourselves
-        unsafe { libc::raise(libc::SIGUSR1); }
+        unsafe {
+            libc::raise(libc::SIGUSR1);
+        }
 
         // Should be able to read a byte from the pipe
         let mut buf = [0u8; 1];
-        let n = unsafe {
-            libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1)
-        };
+        let n = unsafe { libc::read(read_fd, buf.as_mut_ptr() as *mut libc::c_void, 1) };
         assert_eq!(n, 1);
 
         close_fd(read_fd);

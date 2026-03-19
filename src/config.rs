@@ -122,8 +122,16 @@ fn default_bindings() -> Vec<Binding> {
         bind(KeyCode::char('r'), RenameWindow, false),
         bind(KeyCode(KeyCode::LEFT | KeyCode::CTRL), PrevWindow, true),
         bind(KeyCode(KeyCode::RIGHT | KeyCode::CTRL), NextWindow, true),
-        bind(KeyCode(KeyCode::LEFT | KeyCode::SHIFT), SwapWindowLeft, true),
-        bind(KeyCode(KeyCode::RIGHT | KeyCode::SHIFT), SwapWindowRight, true),
+        bind(
+            KeyCode(KeyCode::LEFT | KeyCode::SHIFT),
+            SwapWindowLeft,
+            true,
+        ),
+        bind(
+            KeyCode(KeyCode::RIGHT | KeyCode::SHIFT),
+            SwapWindowRight,
+            true,
+        ),
         bind(KeyCode::char('\\'), SplitH, false),
         bind(KeyCode::char('-'), SplitV, false),
         bind(KeyCode::char('z'), ZoomPane, false),
@@ -148,7 +156,11 @@ fn default_bindings() -> Vec<Binding> {
 }
 
 fn bind(key: KeyCode, action: Action, repeat: bool) -> Binding {
-    Binding { key, action, repeat }
+    Binding {
+        key,
+        action,
+        repeat,
+    }
 }
 
 fn parse_config(content: &str, config: &mut Config) {
@@ -249,7 +261,11 @@ fn parse_bind(parts: &[&str], config: &mut Config) {
 
     // Remove existing binding for this key
     config.bindings.retain(|b| b.key != key);
-    config.bindings.push(Binding { key, action, repeat });
+    config.bindings.push(Binding {
+        key,
+        action,
+        repeat,
+    });
 }
 
 fn parse_action(name: &str) -> Option<Action> {

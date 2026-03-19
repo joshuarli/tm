@@ -189,7 +189,12 @@ impl Screen {
                 let cells = &mut line.compact[cx..cx + n];
                 for (j, c) in cells.iter_mut().enumerate() {
                     let new_ch = bytes[i + j];
-                    if c.ch == new_ch && c.attr == attr && c.fg == fg && c.bg == bg && !c.is_extended() {
+                    if c.ch == new_ch
+                        && c.attr == attr
+                        && c.fg == fg
+                        && c.bg == bg
+                        && !c.is_extended()
+                    {
                         continue; // identical — don't mark dirty
                     }
                     c.ch = new_ch;
@@ -496,9 +501,10 @@ impl Screen {
 
 impl CellContent {
     pub fn default_with_bg(bg: Color) -> Self {
-        let mut c = Self::default();
-        c.bg = bg;
-        c
+        Self {
+            bg,
+            ..Self::default()
+        }
     }
 }
 

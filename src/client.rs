@@ -14,10 +14,7 @@ const TOKEN_TTY: Token = Token(1);
 const TOKEN_SIGWINCH: Token = Token(2);
 
 /// Connect to the server via Unix socket and run the client.
-pub(crate) fn run_client(
-    msg_type: u16,
-    session_name: &str,
-) -> Result<()> {
+pub(crate) fn run_client(msg_type: u16, session_name: &str) -> Result<()> {
     let socket_path = protocol::socket_path();
     let stream = UnixStream::connect(&socket_path)
         .with_context(|| format!("connecting to {}", socket_path.display()))?;
@@ -32,19 +29,11 @@ pub(crate) fn run_client(
 }
 
 /// Run the client on a pre-connected fd (from socketpair during server startup).
-pub(crate) fn run_client_on_fd(
-    msg_type: u16,
-    session_name: &str,
-    sock_fd: RawFd,
-) -> Result<()> {
+pub(crate) fn run_client_on_fd(msg_type: u16, session_name: &str, sock_fd: RawFd) -> Result<()> {
     run_client_inner(msg_type, session_name, sock_fd)
 }
 
-fn run_client_inner(
-    msg_type: u16,
-    session_name: &str,
-    sock_fd: RawFd,
-) -> Result<()> {
+fn run_client_inner(msg_type: u16, session_name: &str, sock_fd: RawFd) -> Result<()> {
     let needs_tty = msg_type != protocol::MSG_LIST && msg_type != protocol::MSG_KILL_SESSION;
 
     if needs_tty {
@@ -82,21 +71,19 @@ fn run_client_inner(
     let mut poll = Poll::new().context("creating poll")?;
     let mut events = Events::with_capacity(64);
 
-    poll.registry().register(
-        &mut SourceFd(&sock_fd),
-        TOKEN_SOCKET,
-        Interest::READABLE,
-    ).context("registering socket")?;
-    poll.registry().register(
-        &mut SourceFd(&input_fd),
-        TOKEN_TTY,
-        Interest::READABLE,
-    ).context("registering stdin")?;
-    poll.registry().register(
-        &mut SourceFd(&sigwinch_fd),
-        TOKEN_SIGWINCH,
-        Interest::READABLE,
-    ).context("registering sigwinch")?;
+    poll.registry()
+        .register(&mut SourceFd(&sock_fd), TOKEN_SOCKET, Interest::READABLE)
+        .context("registering socket")?;
+    poll.registry()
+        .register(&mut SourceFd(&input_fd), TOKEN_TTY, Interest::READABLE)
+        .context("registering stdin")?;
+    poll.registry()
+        .register(
+            &mut SourceFd(&sigwinch_fd),
+            TOKEN_SIGWINCH,
+            Interest::READABLE,
+        )
+        .context("registering sigwinch")?;
 
     let result = client_loop(&mut poll, &mut events, sock_fd, input_fd, sigwinch_fd);
 
@@ -263,12 +250,7 @@ fn handle_kill_response(sock_fd: RawFd) -> Result<()> {
 }
 
 fn open_tty() -> io::Result<RawFd> {
-    let fd = unsafe {
-        libc::open(
-            c"/dev/tty".as_ptr(),
-            libc::O_RDWR,
-        )
-    };
+    let fd = unsafe { libc::open(c"/dev/tty".as_ptr(), libc::O_RDWR) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }

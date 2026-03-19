@@ -177,7 +177,11 @@ impl GridLine {
             c.flags = CompactCell::EXTENDED | CompactCell::DIRTY;
         } else {
             let c = &mut self.compact[col];
-            let new_ch = if content.ch_len == 1 { content.ch[0] } else { b' ' };
+            let new_ch = if content.ch_len == 1 {
+                content.ch[0]
+            } else {
+                b' '
+            };
             let new_attr = content.attr.basic();
             let new_fg = match content.fg {
                 Color::Palette(p) => p,
@@ -188,7 +192,12 @@ impl GridLine {
                 _ => 0,
             };
             // Skip if identical — avoid marking dirty for unchanged cells
-            if !c.is_extended() && c.ch == new_ch && c.attr == new_attr && c.fg == new_fg && c.bg == new_bg {
+            if !c.is_extended()
+                && c.ch == new_ch
+                && c.attr == new_attr
+                && c.fg == new_fg
+                && c.bg == new_bg
+            {
                 return;
             }
             c.ch = new_ch;
@@ -295,8 +304,7 @@ impl GridLine {
     pub fn resize(&mut self, new_width: u32) {
         let new_width = new_width as usize;
         if new_width > self.compact.len() {
-            self.compact
-                .resize(new_width, CompactCell::default());
+            self.compact.resize(new_width, CompactCell::default());
         }
         // Mark the whole line dirty after resize
         self.mark_dirty();
@@ -540,7 +548,7 @@ impl Grid {
                     flags: LineFlags::default(),
                 });
             } else {
-                let nchunks = (compact_buf.len() + new_sx_usize - 1) / new_sx_usize;
+                let nchunks = compact_buf.len().div_ceil(new_sx_usize);
                 for ci in 0..nchunks {
                     let start = ci * new_sx_usize;
                     let end = (start + new_sx_usize).min(compact_buf.len());
@@ -659,7 +667,11 @@ mod tests {
     fn test_compact_cell_ascii() {
         let mut line = GridLine::new(80);
         let content = CellContent {
-            ch: { let mut b = [0u8; 8]; b[0] = b'X'; b },
+            ch: {
+                let mut b = [0u8; 8];
+                b[0] = b'X';
+                b
+            },
             ch_len: 1,
             ch_width: 1,
             attr: CellAttr::default(),
@@ -679,7 +691,11 @@ mod tests {
     fn test_extended_cell_rgb() {
         let mut line = GridLine::new(80);
         let content = CellContent {
-            ch: { let mut b = [0u8; 8]; b[0] = b'Z'; b },
+            ch: {
+                let mut b = [0u8; 8];
+                b[0] = b'Z';
+                b
+            },
             ch_len: 1,
             ch_width: 1,
             attr: CellAttr::default(),
@@ -727,13 +743,17 @@ mod tests {
         let mut grid = Grid::new(10, 5, 100);
         for i in 0..10u8 {
             let content = CellContent::from_ascii(b'A' + i);
-            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &content);
         }
         grid.visible_line_mut(0).unwrap().flags = LineFlags(LineFlags::WRAPPED);
 
         for i in 0..5u8 {
             let content = CellContent::from_ascii(b'a' + i);
-            grid.visible_line_mut(1).unwrap().set_cell(i as u32, &content);
+            grid.visible_line_mut(1)
+                .unwrap()
+                .set_cell(i as u32, &content);
         }
 
         // Shrink to 5 cols — "ABCDEFGHIJabcde" becomes 3 lines
@@ -773,13 +793,17 @@ mod tests {
         let mut grid = Grid::new(5, 5, 100);
         for i in 0..5u8 {
             let content = CellContent::from_ascii(b'A' + i);
-            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &content);
         }
         grid.visible_line_mut(0).unwrap().flags = LineFlags(LineFlags::WRAPPED);
 
         for i in 0..5u8 {
             let content = CellContent::from_ascii(b'F' + i);
-            grid.visible_line_mut(1).unwrap().set_cell(i as u32, &content);
+            grid.visible_line_mut(1)
+                .unwrap()
+                .set_cell(i as u32, &content);
         }
 
         grid.resize(10, 5);
@@ -974,7 +998,9 @@ mod tests {
         let chars = b"ABCDEFGH";
         for (i, &ch) in chars.iter().enumerate() {
             let content = CellContent::from_ascii(ch);
-            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &content);
         }
 
         // Shrink to 5: "ABCDEFGH" splits into "ABCDE" (wrapped) + "FGH"
@@ -1001,5 +1027,4 @@ mod tests {
         }
         assert!(!row.flags.has(LineFlags::WRAPPED));
     }
-
 }

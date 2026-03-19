@@ -31,6 +31,12 @@ pub struct State {
     next_client: u32,
 }
 
+impl Default for State {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl State {
     pub fn new() -> Self {
         Self {
@@ -70,13 +76,7 @@ impl State {
     }
 
     /// Create a new session with one window containing one pane.
-    pub fn create_session(
-        &mut self,
-        name: &str,
-        pane_id: PaneId,
-        sx: u32,
-        sy: u32,
-    ) -> SessionId {
+    pub fn create_session(&mut self, name: &str, pane_id: PaneId, sx: u32, sy: u32) -> SessionId {
         let sid = self.alloc_session_id();
         let wid = self.alloc_window_id();
 
@@ -316,8 +316,8 @@ pub struct Client {
     pub input_buf: Vec<u8>,
     pub output_buf: Vec<u8>,
     pub mode: ClientMode,
-    pub copy_oy: u32,      // scroll offset in copy mode (lines from bottom)
-    pub copy_pane: PaneId, // which pane is being scrolled
+    pub copy_oy: u32,           // scroll offset in copy mode (lines from bottom)
+    pub copy_pane: PaneId,      // which pane is being scrolled
     pub sel: Option<Selection>, // click-drag text selection
     pub status_message: Option<(String, Instant)>,
     pub prompt_buf: Option<String>,
@@ -440,7 +440,9 @@ mod tests {
         let pid = make_test_pane(&mut state);
         let sid = state.create_session("s", pid, 80, 25);
         let cid = state.alloc_client_id();
-        state.clients.insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+        state
+            .clients
+            .insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
 
         assert_eq!(state.active_pane_for_client(cid), Some(pid));
     }

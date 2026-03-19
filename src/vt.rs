@@ -47,6 +47,12 @@ pub enum VtAction {
     MouseMode { button: bool, sgr: bool, any: bool },
 }
 
+impl Default for VtParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VtParser {
     pub fn new() -> Self {
         Self {
@@ -74,8 +80,14 @@ impl VtParser {
                 let screen = pane.screen_mut();
                 let can_fast = !screen.mode.has(crate::screen::ScreenMode::INSERT)
                     && screen.cell.attr.fits_compact()
-                    && matches!(screen.cell.fg, crate::grid::Color::Default | crate::grid::Color::Palette(_))
-                    && matches!(screen.cell.bg, crate::grid::Color::Default | crate::grid::Color::Palette(_))
+                    && matches!(
+                        screen.cell.fg,
+                        crate::grid::Color::Default | crate::grid::Color::Palette(_)
+                    )
+                    && matches!(
+                        screen.cell.bg,
+                        crate::grid::Color::Default | crate::grid::Color::Palette(_)
+                    )
                     && matches!(screen.cell.us, crate::grid::Color::Default);
                 if can_fast {
                     let mut advanced = false;
@@ -113,7 +125,9 @@ impl VtParser {
                             }
                             0x1B => {
                                 // ESC — try CSI fast path
-                                if let Some(consumed) = self.try_csi_fast(pane, &data[i..], &mut actions) {
+                                if let Some(consumed) =
+                                    self.try_csi_fast(pane, &data[i..], &mut actions)
+                                {
                                     i += consumed;
                                     advanced = true;
                                     break; // re-check can_fast after SGR change
@@ -140,7 +154,7 @@ impl VtParser {
         &mut self,
         pane: &mut PaneScreenAccess,
         buf: &[u8],
-        actions: &mut Vec<VtAction>,
+        _actions: &mut Vec<VtAction>,
     ) -> Option<usize> {
         // Need at least ESC [ <final>
         if buf.len() < 3 || buf[0] != 0x1B || buf[1] != b'[' {
@@ -182,7 +196,9 @@ impl VtParser {
             match params[j] {
                 b'0'..=b'9' => {
                     if pi < p.len() {
-                        p[pi] = p[pi].saturating_mul(10).saturating_add((params[j] - b'0') as u16);
+                        p[pi] = p[pi]
+                            .saturating_mul(10)
+                            .saturating_add((params[j] - b'0') as u16);
                     }
                     j += 1;
                 }
@@ -205,32 +221,38 @@ impl VtParser {
                         b'm' => {
                             // SGR — set params and dispatch
                             self.params.clear();
-                            for k in 0..nparams {
-                                self.params.push(p[k]);
-                            }
+                            self.params.extend_from_slice(&p[..nparams]);
                             self.sgr(pane);
                             return Some(total);
                         }
                         b'H' | b'f' => {
                             let row = if p[0] == 0 { 0 } else { p[0] as u32 - 1 };
-                            let col = if nparams > 1 && p[1] > 0 { p[1] as u32 - 1 } else { 0 };
+                            let col = if nparams > 1 && p[1] > 0 {
+                                p[1] as u32 - 1
+                            } else {
+                                0
+                            };
                             pane.screen_mut().cursor_to(row, col);
                             return Some(total);
                         }
                         b'A' => {
-                            pane.screen_mut().cursor_up(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            pane.screen_mut()
+                                .cursor_up(if p[0] == 0 { 1 } else { p[0] as u32 });
                             return Some(total);
                         }
                         b'B' => {
-                            pane.screen_mut().cursor_down(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            pane.screen_mut()
+                                .cursor_down(if p[0] == 0 { 1 } else { p[0] as u32 });
                             return Some(total);
                         }
                         b'C' => {
-                            pane.screen_mut().cursor_right(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            pane.screen_mut()
+                                .cursor_right(if p[0] == 0 { 1 } else { p[0] as u32 });
                             return Some(total);
                         }
                         b'D' => {
-                            pane.screen_mut().cursor_left(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            pane.screen_mut()
+                                .cursor_left(if p[0] == 0 { 1 } else { p[0] as u32 });
                             return Some(total);
                         }
                         b'G' => {
@@ -251,7 +273,11 @@ impl VtParser {
                         b'r' => {
                             let screen = pane.screen_mut();
                             let top = if p[0] == 0 { 0 } else { p[0] as u32 - 1 };
-                            let bot = if nparams > 1 && p[1] > 0 { p[1] as u32 - 1 } else { screen.sy() - 1 };
+                            let bot = if nparams > 1 && p[1] > 0 {
+                                p[1] as u32 - 1
+                            } else {
+                                screen.sy() - 1
+                            };
                             screen.set_scroll_region(top, bot);
                             return Some(total);
                         }
@@ -265,12 +291,7 @@ impl VtParser {
         None
     }
 
-    fn process_byte(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn process_byte(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         // Handle UTF-8 continuation in Ground state
         if self.utf8_need > 0 && self.state == VtState::Ground {
             if byte & 0xC0 == 0x80 {
@@ -306,19 +327,14 @@ impl VtParser {
         }
     }
 
-    fn ground(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn ground(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         match byte {
             // C0 controls
             0x00 => {} // NUL — ignore
             0x07 => {} // BEL — ignore (could ring bell)
             0x08 => pane.screen_mut().backspace(),
             0x09 => pane.screen_mut().tab(),
-            0x0A | 0x0B | 0x0C => pane.screen_mut().linefeed(),
+            0x0A..=0x0C => pane.screen_mut().linefeed(),
             0x0D => pane.screen_mut().carriage_return(),
             0x0E | 0x0F => {} // SO/SI — charset switching, ignore
             0x1B => {
@@ -353,12 +369,7 @@ impl VtParser {
         let _ = actions;
     }
 
-    fn escape(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn escape(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         match byte {
             0x5B => {
                 // ESC [ → CSI
@@ -464,12 +475,7 @@ impl VtParser {
         let _ = (pane, actions);
     }
 
-    fn csi_entry(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn csi_entry(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         match byte {
             0x30..=0x39 => {
                 // Digit — start collecting parameter
@@ -506,12 +512,7 @@ impl VtParser {
         }
     }
 
-    fn csi_param(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn csi_param(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         match byte {
             0x30..=0x39 => {
                 // Digit — accumulate
@@ -583,12 +584,7 @@ impl VtParser {
         }
     }
 
-    fn csi_dispatch(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn csi_dispatch(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         let is_private = self.intermediates.first() == Some(&b'?');
         let is_gt = self.intermediates.first() == Some(&b'>');
         let p = |idx: usize, default: u32| -> u32 {
@@ -598,12 +594,7 @@ impl VtParser {
                 .map(|v| if v == 0 { default } else { v as u32 })
                 .unwrap_or(default)
         };
-        let p0 = |idx: usize| -> u32 {
-            self.params
-                .get(idx)
-                .copied()
-                .unwrap_or(0) as u32
-        };
+        let p0 = |idx: usize| -> u32 { self.params.get(idx).copied().unwrap_or(0) as u32 };
 
         match byte {
             b'A' => {
@@ -719,9 +710,8 @@ impl VtParser {
                     self.set_mode_private(pane, true, actions);
                 } else {
                     // SM — set mode
-                    match p0(0) {
-                        4 => pane.screen_mut().mode.set(ScreenMode::INSERT),
-                        _ => {}
+                    if p0(0) == 4 {
+                        pane.screen_mut().mode.set(ScreenMode::INSERT)
                     }
                 }
             }
@@ -730,9 +720,8 @@ impl VtParser {
                     self.set_mode_private(pane, false, actions);
                 } else {
                     // RM — reset mode
-                    match p0(0) {
-                        4 => pane.screen_mut().mode.clear(ScreenMode::INSERT),
-                        _ => {}
+                    if p0(0) == 4 {
+                        pane.screen_mut().mode.clear(ScreenMode::INSERT)
                     }
                 }
             }
@@ -815,7 +804,13 @@ impl VtParser {
             _ => {
                 crate::log::log(&format!(
                     "unknown CSI {}{}",
-                    if is_private { "?" } else if is_gt { ">" } else { "" },
+                    if is_private {
+                        "?"
+                    } else if is_gt {
+                        ">"
+                    } else {
+                        ""
+                    },
                     byte as char
                 ));
             }
@@ -977,10 +972,19 @@ impl VtParser {
                         match sub {
                             0 => {
                                 pane.screen_mut().cell.attr.clear(CellAttr::UNDERLINE);
-                                pane.screen_mut().cell.attr.clear(CellAttr::DOUBLE_UNDERLINE);
+                                pane.screen_mut()
+                                    .cell
+                                    .attr
+                                    .clear(CellAttr::DOUBLE_UNDERLINE);
                                 pane.screen_mut().cell.attr.clear(CellAttr::CURLY_UNDERLINE);
-                                pane.screen_mut().cell.attr.clear(CellAttr::DOTTED_UNDERLINE);
-                                pane.screen_mut().cell.attr.clear(CellAttr::DASHED_UNDERLINE);
+                                pane.screen_mut()
+                                    .cell
+                                    .attr
+                                    .clear(CellAttr::DOTTED_UNDERLINE);
+                                pane.screen_mut()
+                                    .cell
+                                    .attr
+                                    .clear(CellAttr::DASHED_UNDERLINE);
                             }
                             1 => pane.screen_mut().cell.attr.set(CellAttr::UNDERLINE),
                             2 => pane.screen_mut().cell.attr.set(CellAttr::DOUBLE_UNDERLINE),
@@ -1005,10 +1009,19 @@ impl VtParser {
                 23 => pane.screen_mut().cell.attr.clear(CellAttr::ITALIC),
                 24 => {
                     pane.screen_mut().cell.attr.clear(CellAttr::UNDERLINE);
-                    pane.screen_mut().cell.attr.clear(CellAttr::DOUBLE_UNDERLINE);
+                    pane.screen_mut()
+                        .cell
+                        .attr
+                        .clear(CellAttr::DOUBLE_UNDERLINE);
                     pane.screen_mut().cell.attr.clear(CellAttr::CURLY_UNDERLINE);
-                    pane.screen_mut().cell.attr.clear(CellAttr::DOTTED_UNDERLINE);
-                    pane.screen_mut().cell.attr.clear(CellAttr::DASHED_UNDERLINE);
+                    pane.screen_mut()
+                        .cell
+                        .attr
+                        .clear(CellAttr::DOTTED_UNDERLINE);
+                    pane.screen_mut()
+                        .cell
+                        .attr
+                        .clear(CellAttr::DASHED_UNDERLINE);
                 }
                 27 => pane.screen_mut().cell.attr.clear(CellAttr::REVERSE),
                 28 => pane.screen_mut().cell.attr.clear(CellAttr::INVISIBLE),
@@ -1078,12 +1091,7 @@ impl VtParser {
         }
     }
 
-    fn osc_string(
-        &mut self,
-        pane: &mut PaneScreenAccess,
-        byte: u8,
-        actions: &mut Vec<VtAction>,
-    ) {
+    fn osc_string(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         match byte {
             0x07 => {
                 // BEL terminates OSC
@@ -1259,11 +1267,7 @@ fn utf8_char_width(bytes: &[u8]) -> u8 {
     };
 
     // Wide characters: CJK Unified Ideographs, Hangul, Fullwidth forms, etc.
-    if is_wide_codepoint(cp) {
-        2
-    } else {
-        1
-    }
+    if is_wide_codepoint(cp) { 2 } else { 1 }
 }
 
 fn is_wide_codepoint(cp: u32) -> bool {
@@ -1290,7 +1294,7 @@ fn is_wide_codepoint(cp: u32) -> bool {
 /// Process VT data for a pane. Call this from the server when PTY data arrives.
 pub fn process_pane_output(pane: &mut Pane, data: &[u8]) -> Vec<VtAction> {
     // Split borrow: take the parser out, process, put it back
-    let mut parser = std::mem::replace(&mut pane.parser, VtParser::new());
+    let mut parser = std::mem::take(&mut pane.parser);
     let mut access = PaneScreenAccess::new(pane);
     let actions = parser.feed(&mut access, data);
     pane.parser = parser;
@@ -1304,7 +1308,7 @@ mod tests {
 
     /// Helper: create a screen and feed VT data to it via the parser.
     fn feed_screen(sx: u32, sy: u32, data: &[u8]) -> Screen {
-        let mut screen = Screen::new(sx, sy);
+        let _screen = Screen::new(sx, sy);
         let mut parser = VtParser::new();
 
         // We need a Pane to use PaneScreenAccess, but for tests
@@ -1429,18 +1433,23 @@ mod tests {
     fn test_osc_title() {
         let mut pane = make_test_pane(80, 24);
         let actions = process_pane_output(&mut pane, b"\x1b]2;My Title\x07");
-        assert!(actions.iter().any(|a| matches!(a, VtAction::Title(t) if t == "My Title")));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, VtAction::Title(t) if t == "My Title"))
+        );
         assert_eq!(pane.screen.title, "My Title");
     }
 
     #[test]
     fn test_osc_cwd() {
         let mut pane = make_test_pane(80, 24);
-        let actions = process_pane_output(
-            &mut pane,
-            b"\x1b]7;file://hostname/home/user\x07",
+        let actions = process_pane_output(&mut pane, b"\x1b]7;file://hostname/home/user\x07");
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, VtAction::Cwd(p) if p == "/home/user"))
         );
-        assert!(actions.iter().any(|a| matches!(a, VtAction::Cwd(p) if p == "/home/user")));
     }
 
     #[test]
@@ -1448,7 +1457,11 @@ mod tests {
         let mut pane = make_test_pane(80, 24);
         process_pane_output(&mut pane, b"Normal");
         let actions = process_pane_output(&mut pane, b"\x1b[?1049h");
-        assert!(actions.iter().any(|a| matches!(a, VtAction::AltScreen(true))));
+        assert!(
+            actions
+                .iter()
+                .any(|a| matches!(a, VtAction::AltScreen(true)))
+        );
     }
 
     #[test]
