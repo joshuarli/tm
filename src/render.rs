@@ -23,10 +23,17 @@ pub(crate) fn render_client(state: &State, config: &Config, cid: ClientId, tty: 
     tty.sync_begin();
     tty.cursor_hide();
 
+    // Determine copy mode scroll offset
+    let copy_oy = if client.mode == ClientMode::CopyMode {
+        Some((client.copy_pane, client.copy_oy))
+    } else {
+        None
+    };
+
     // Render panes
     if let Some(zoomed_pid) = window.zoomed {
-        // Only render the zoomed pane
-        render_pane(state, zoomed_pid, 0, 0, sx, status_row, tty);
+        let oy = copy_oy.and_then(|(p, o)| if p == zoomed_pid { Some(o) } else { None }).unwrap_or(0);
+        render_pane(state, zoomed_pid, 0, 0, sx, status_row, oy, tty);
     } else {
         let geos = window.layout.calculate(0, 0, window.sx, window.sy);
 
@@ -35,7 +42,8 @@ pub(crate) fn render_client(state: &State, config: &Config, cid: ClientId, tty: 
 
         // Render each pane
         for geo in &geos {
-            render_pane(state, geo.id, geo.xoff, geo.yoff, geo.sx, geo.sy, tty);
+            let oy = copy_oy.and_then(|(p, o)| if p == geo.id { Some(o) } else { None }).unwrap_or(0);
+            render_pane(state, geo.id, geo.xoff, geo.yoff, geo.sx, geo.sy, oy, tty);
         }
     }
 
@@ -68,6 +76,7 @@ fn render_pane(
     yoff: u32,
     sx: u32,
     sy: u32,
+    copy_oy: u32,
     tty: &mut TtyWriter,
 ) {
     let Some(pane) = state.panes.get(&pid) else {
@@ -75,20 +84,37 @@ fn render_pane(
     };
     let screen = pane.active_screen();
     let grid = &screen.grid;
+    let force = pane.flags.contains(crate::state::PaneFlags::REDRAW) || copy_oy > 0;
 
     for row in 0..sy {
-        let Some(line) = grid.visible_line(row) else {
+        // In copy mode (oy > 0), read from history: line = hsize - oy + row
+        // In normal mode (oy == 0), read visible lines as before
+        let line = if copy_oy > 0 {
+            let abs = (grid.hsize() as i64 - copy_oy as i64 + row as i64) as u32;
+            grid.line(abs)
+        } else {
+            grid.visible_line(row)
+        };
+        let Some(line) = line else {
+            // No line — draw blank
+            tty.cursor_goto(yoff + row, xoff);
+            tty.reset_attrs();
+            for _ in 0..sx {
+                tty.write_raw(b" ");
+            }
             continue;
         };
 
-        // Check if any cell in this line is dirty
-        let any_dirty = line
-            .compact
-            .iter()
-            .take(sx as usize)
-            .any(|c| c.is_dirty());
-        if !any_dirty && !pane.flags.contains(crate::state::PaneFlags::REDRAW) {
-            continue;
+        // Check if any cell in this line is dirty (skip clean lines in normal mode)
+        if !force {
+            let any_dirty = line
+                .compact
+                .iter()
+                .take(sx as usize)
+                .any(|c| c.is_dirty());
+            if !any_dirty {
+                continue;
+            }
         }
 
         tty.cursor_goto(yoff + row, xoff);
@@ -245,6 +271,29 @@ fn render_status(
         tty.write_str(&msg_display);
         // Pad to full width
         let remaining = sx as usize - msg_display.len().min(sx as usize);
+        for _ in 0..remaining {
+            tty.write_raw(b" ");
+        }
+        return;
+    }
+
+    // Check for copy mode
+    if client.mode == ClientMode::CopyMode {
+        tty.reset_attrs();
+        tty.set_cell_attrs(&CellContent {
+            fg: Color::Palette(3), // yellow
+            bg: Color::Default,
+            attr: CellAttr(CellAttr::BOLD),
+            ..CellContent::default()
+        });
+        let display = format!("[copy mode] line {}", client.copy_oy);
+        let display: String = display.chars().take(sx as usize).collect();
+        tty.write_str(&display);
+        let remaining = sx as usize - display.len().min(sx as usize);
+        tty.set_cell_attrs(&CellContent {
+            bg: Color::Default,
+            ..CellContent::default()
+        });
         for _ in 0..remaining {
             tty.write_raw(b" ");
         }

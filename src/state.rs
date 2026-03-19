@@ -292,6 +292,8 @@ pub(crate) struct Client {
     pub(crate) input_buf: Vec<u8>,
     pub(crate) output_buf: Vec<u8>,
     pub(crate) mode: ClientMode,
+    pub(crate) copy_oy: u32,      // scroll offset in copy mode (lines from bottom)
+    pub(crate) copy_pane: PaneId, // which pane is being scrolled
     pub(crate) status_message: Option<(String, Instant)>,
     pub(crate) prompt_buf: Option<String>,
     pub(crate) prompt_action: Option<PromptAction>,
@@ -326,6 +328,8 @@ impl Client {
             input_buf: Vec::new(),
             output_buf: Vec::new(),
             mode: ClientMode::Normal,
+            copy_oy: 0,
+            copy_pane: PaneId(0),
             status_message: None,
             prompt_buf: None,
             prompt_action: None,

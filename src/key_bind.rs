@@ -828,26 +828,75 @@ fn execute_command(state: &mut State, cid: ClientId, input: &str) -> InputResult
     }
 }
 
+const SCROLL_LINES: u32 = 3;
+
+fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
+    if let Some(client) = state.clients.get_mut(&cid) {
+        client.mode = ClientMode::CopyMode;
+        client.copy_oy = 0;
+        client.copy_pane = pane_id;
+    }
+}
+
+fn exit_copy_mode(state: &mut State, cid: ClientId) {
+    if let Some(client) = state.clients.get_mut(&cid) {
+        client.mode = ClientMode::Normal;
+        client.copy_oy = 0;
+    }
+}
+
+fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
+    let Some(client) = state.clients.get(&cid) else {
+        return InputResult::None;
+    };
+    let pane_id = client.copy_pane;
+    let oy = client.copy_oy;
+
+    let max_oy = state
+        .panes
+        .get(&pane_id)
+        .map(|p| p.active_screen().grid.hsize())
+        .unwrap_or(0);
+
+    let new_oy = if delta > 0 {
+        // Scroll up (into history)
+        oy.saturating_add(delta as u32).min(max_oy)
+    } else {
+        // Scroll down (toward live)
+        oy.saturating_sub((-delta) as u32)
+    };
+
+    if new_oy == 0 {
+        exit_copy_mode(state, cid);
+    } else if let Some(client) = state.clients.get_mut(&cid) {
+        client.copy_oy = new_oy;
+    }
+
+    InputResult::Redraw
+}
+
 fn process_copy_input(state: &mut State, cid: ClientId, event: InputEvent) -> InputResult {
     match event {
         InputEvent::Key(key) => {
             let base = key.base();
-            if base == KeyCode::ESCAPE || base == b'q' as u32 {
-                if let Some(client) = state.clients.get_mut(&cid) {
-                    client.mode = ClientMode::Normal;
+            match base {
+                k if k == KeyCode::ESCAPE || k == b'q' as u32 => {
+                    exit_copy_mode(state, cid);
+                    InputResult::Redraw
                 }
-                return InputResult::Redraw;
+                KeyCode::PAGEUP => copy_scroll(state, cid, 24),
+                KeyCode::PAGEDOWN => copy_scroll(state, cid, -24),
+                _ => InputResult::None,
             }
         }
         InputEvent::Mouse(MouseEvent::WheelUp { .. }) => {
-            // Scroll up in copy mode — handled by copy module
+            copy_scroll(state, cid, SCROLL_LINES as i32)
         }
         InputEvent::Mouse(MouseEvent::WheelDown { .. }) => {
-            // Scroll down in copy mode
+            copy_scroll(state, cid, -(SCROLL_LINES as i32))
         }
-        _ => {}
+        _ => InputResult::None,
     }
-    InputResult::None
 }
 
 fn process_mouse(
@@ -884,19 +933,25 @@ fn process_mouse(
             InputResult::None
         }
         MouseEvent::WheelUp { x, y } => {
-            let pid = find_pane_at(state, cid, x, y);
-            if let Some(pid) = pid {
-                // Send up arrows — works for alt screen apps and is
-                // harmless for the shell. Copy mode scroll is not yet implemented.
+            let Some(pid) = find_pane_at(state, cid, x, y) else {
+                return InputResult::None;
+            };
+            // Alt screen: send up arrows to the app
+            if state.panes.get(&pid).map_or(false, |p| p.is_alt_screen()) {
                 return InputResult::PtyWrite(pid, b"\x1b[A\x1b[A\x1b[A".to_vec());
             }
-            InputResult::None
+            // Normal screen: enter copy mode and scroll
+            enter_copy_mode(state, cid, pid);
+            copy_scroll(state, cid, SCROLL_LINES as i32)
         }
         MouseEvent::WheelDown { x, y } => {
-            let pid = find_pane_at(state, cid, x, y);
-            if let Some(pid) = pid {
+            let Some(pid) = find_pane_at(state, cid, x, y) else {
+                return InputResult::None;
+            };
+            if state.panes.get(&pid).map_or(false, |p| p.is_alt_screen()) {
                 return InputResult::PtyWrite(pid, b"\x1b[B\x1b[B\x1b[B".to_vec());
             }
+            // In normal mode, wheel down does nothing (already at bottom)
             InputResult::None
         }
         _ => {
