@@ -844,13 +844,15 @@ fn exit_copy_mode(state: &mut State, cid: ClientId) {
         client.mode = ClientMode::Normal;
         client.copy_oy = 0;
         client.sel = None;
+        // Clear the screen so the full live view redraws cleanly
+        let mut tty = crate::tty::TtyWriter::new();
+        tty.clear_screen();
+        tty.flush_to(client.tty_fd).ok();
     }
-    // Mark all visible lines dirty so they redraw cleanly
-    if let Some(pid) = pane_id {
-        if let Some(pane) = state.panes.get_mut(&pid) {
-            pane.active_screen_mut().grid.mark_all_dirty();
-            pane.flags |= crate::state::PaneFlags::REDRAW;
-        }
+    // Mark all panes for full redraw
+    for pane in state.panes.values_mut() {
+        pane.active_screen_mut().grid.mark_all_dirty();
+        pane.flags |= crate::state::PaneFlags::REDRAW;
     }
 }
 
