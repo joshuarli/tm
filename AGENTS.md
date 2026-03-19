@@ -84,6 +84,24 @@ Mouse wheel enters copy mode with `oy` offset into scrollback. Wheel deltas are 
 | `pty.rs` | forkpty, spawn login shell, set TERM/TM env |
 | `log.rs` | File logger (when `TM_LOG=1`) |
 
+## Rendering Pipeline
+
+```
+Shell → PTY → tm server (8ms tick) → escape sequences → terminal emulator (vsync) → display
+```
+
+Two independent render clocks exist: tm's 8ms poll tick and the terminal emulator's display refresh (typically 8ms at 120Hz or 16ms at 60Hz). Key design considerations:
+
+**Synchronized output (Mode 2026)** prevents tearing. tm wraps each render in `\x1b[?2026h`...`\x1b[?2026l`. The terminal accumulates all changes during the BSU/ESU window and renders them atomically on the next frame. This makes the exact timing of tm's render irrelevant — the terminal handles frame pacing.
+
+**The 8ms tick** is a coalesce window, not a frame rate. When panes produce output, tm waits up to 8ms for more data before rendering. This batches rapid output (like `yes` or `cat largefile`) into single frames. The tick is implemented as `mio::Poll::poll()` timeout — when idle, it's a single syscall sleeping in the kernel with negligible CPU cost (~100ns per wakeup, ~12µs/sec at 125Hz).
+
+**Why not event-driven (render immediately on data)?** Without a coalesce window, programs producing unlimited output would flood the tty pipe with escape sequences faster than the terminal can consume them. The tick provides natural backpressure.
+
+**Why 8ms, not 16ms?** Halves worst-case latency from pane output → display. For interactive use (typing, scrolling), the difference between 8ms and 16ms is perceptible. No meaningful CPU cost increase — the work only happens when there are dirty cells to render.
+
+**Scroll coalescing** uses the same principle: wheel events accumulate `scroll_deferred` between ticks, flushed as a single offset change on the next render. This avoids per-wheel-tick full redraws during rapid scrolling.
+
 ## Platform Support
 
 | | macOS aarch64 | Linux aarch64 | Linux x86_64 |

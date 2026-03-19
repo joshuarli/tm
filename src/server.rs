@@ -96,7 +96,7 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
         register_new_connection(sock_fd, &mut state, &mut poll, &mut client_tokens)?;
     }
 
-    let tick_interval = Duration::from_millis(16);
+    let tick_interval = Duration::from_millis(8);
     let mut last_render = Instant::now();
     let mut needs_render = false;
     let mut had_session = false;
