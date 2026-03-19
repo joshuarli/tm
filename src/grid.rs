@@ -277,6 +277,15 @@ impl GridLine {
         }
     }
 
+    /// Clear and resize to width, reusing the existing allocation.
+    pub fn clear_to(&mut self, width: u32) {
+        let width = width as usize;
+        self.compact.clear();
+        self.compact.resize(width, CompactCell::default());
+        self.extended.clear();
+        self.flags = LineFlags::default();
+    }
+
     /// Resize this line to a new width. Only grows — never truncates existing
     /// content, so data is preserved when a pane shrinks then expands.
     pub fn resize(&mut self, new_width: u32) {
@@ -384,13 +393,16 @@ impl Grid {
     /// Scroll up: move the top visible line into history, add a new blank line at bottom.
     /// If we exceed hlimit, drop the oldest history line.
     pub fn scroll_up(&mut self, top: u32, bottom: u32) {
-        // If this is a full-screen scroll (top=0), the top line goes to history
         if top == 0 && bottom == self.sy.saturating_sub(1) {
-            self.lines.push_back(GridLine::new(self.sx));
-            // Trim history if needed
-            while self.hsize() > self.hlimit {
-                self.lines.pop_front();
-            }
+            // Reuse a discarded history line if available, avoiding allocation
+            let new_line = if self.hsize() >= self.hlimit {
+                let mut recycled = self.lines.pop_front().unwrap();
+                recycled.clear_to(self.sx);
+                recycled
+            } else {
+                GridLine::new(self.sx)
+            };
+            self.lines.push_back(new_line);
             // Mark ALL visible lines dirty — every row now shows a different line
             let hsize = self.hsize();
             for row in 0..self.sy {
@@ -466,68 +478,112 @@ impl Grid {
     /// then re-split at the new width.
     fn reflow(&mut self, new_sx: u32) {
         let old_lines: Vec<GridLine> = std::mem::take(&mut self.lines).into();
-        let mut new_lines = VecDeque::new();
+        let mut new_lines = VecDeque::with_capacity(old_lines.len());
+        let new_sx_usize = new_sx as usize;
+
+        // Reusable buffer — cleared between logical lines, not reallocated
+        let mut compact_buf: Vec<CompactCell> = Vec::with_capacity(256);
+        let mut ext_buf: Vec<ExtendedCell> = Vec::new();
 
         let mut i = 0;
         while i < old_lines.len() {
-            // Collect a logical line: a sequence of WRAPPED lines + one final line
-            let mut cells: Vec<CellContent> = Vec::new();
+            compact_buf.clear();
+            ext_buf.clear();
 
+            // Join wrapped lines into one logical line (compact cells + extended)
             loop {
                 let line = &old_lines[i];
-                // Read resolved cells, trimming trailing spaces from each physical line
-                let mut line_cells: Vec<CellContent> = (0..line.compact.len() as u32)
-                    .map(|col| line.get_cell(col))
-                    .collect();
-
-                // Only trim trailing spaces from the last segment of a wrapped group
                 let wrapped = line.flags.has(LineFlags::WRAPPED);
-                if !wrapped {
-                    while line_cells.last().map_or(false, |c| c.ch_len == 1 && c.ch[0] == b' ' && c.attr.0 == 0 && matches!(c.fg, Color::Default) && matches!(c.bg, Color::Default)) {
-                        line_cells.pop();
+
+                for c in &line.compact {
+                    if c.is_extended() {
+                        // Remap extended index into our merged ext_buf
+                        let old_idx = c.extended_idx();
+                        if old_idx < line.extended.len() {
+                            let new_idx = ext_buf.len();
+                            ext_buf.push(line.extended[old_idx]);
+                            let mut new_c = *c;
+                            new_c.attr = ((new_idx >> 16) & 0xFF) as u8;
+                            new_c.fg = ((new_idx >> 8) & 0xFF) as u8;
+                            new_c.bg = (new_idx & 0xFF) as u8;
+                            compact_buf.push(new_c);
+                        } else {
+                            compact_buf.push(CompactCell::default());
+                        }
+                    } else {
+                        compact_buf.push(*c);
                     }
                 }
 
-                cells.extend_from_slice(&line_cells);
                 i += 1;
                 if !wrapped || i >= old_lines.len() {
                     break;
                 }
             }
 
-            // Trim trailing spaces from the full logical line
-            while cells.last().map_or(false, |c| c.ch_len == 1 && c.ch[0] == b' ' && c.attr.0 == 0 && matches!(c.fg, Color::Default) && matches!(c.bg, Color::Default)) {
-                cells.pop();
+            // Trim trailing default spaces
+            while compact_buf.last().is_some_and(|c| {
+                !c.is_extended() && c.ch == b' ' && c.attr == 0 && c.fg == 0 && c.bg == 0
+            }) {
+                compact_buf.pop();
             }
 
-            // Split the logical line at new_sx
-            if cells.is_empty() {
-                let mut line = GridLine::new(new_sx);
-                line.mark_dirty();
-                new_lines.push_back(line);
+            // Split into new lines at new_sx
+            if compact_buf.is_empty() {
+                new_lines.push_back(GridLine {
+                    compact: vec![CompactCell::default(); new_sx_usize],
+                    extended: Vec::new(),
+                    flags: LineFlags::default(),
+                });
             } else {
-                let nchunks = (cells.len() + new_sx as usize - 1) / new_sx as usize;
+                let nchunks = (compact_buf.len() + new_sx_usize - 1) / new_sx_usize;
                 for ci in 0..nchunks {
-                    let start = ci * new_sx as usize;
-                    let end = (start + new_sx as usize).min(cells.len());
-                    let mut line = GridLine::new(new_sx);
-                    for (j, cell) in cells[start..end].iter().enumerate() {
-                        line.set_cell(j as u32, cell);
+                    let start = ci * new_sx_usize;
+                    let end = (start + new_sx_usize).min(compact_buf.len());
+                    let chunk = &compact_buf[start..end];
+
+                    // Build the new line's compact vec
+                    let mut new_compact = Vec::with_capacity(new_sx_usize);
+                    // Collect extended cells referenced by this chunk
+                    let mut new_ext = Vec::new();
+                    for c in chunk {
+                        if c.is_extended() {
+                            let old_idx = c.extended_idx();
+                            if old_idx < ext_buf.len() {
+                                let new_idx = new_ext.len();
+                                new_ext.push(ext_buf[old_idx]);
+                                let mut new_c = *c;
+                                new_c.attr = ((new_idx >> 16) & 0xFF) as u8;
+                                new_c.fg = ((new_idx >> 8) & 0xFF) as u8;
+                                new_c.bg = (new_idx & 0xFF) as u8;
+                                new_compact.push(new_c);
+                            } else {
+                                new_compact.push(CompactCell::default());
+                            }
+                        } else {
+                            let mut c = *c;
+                            c.flags |= CompactCell::DIRTY;
+                            new_compact.push(c);
+                        }
                     }
-                    line.flags = if ci < nchunks - 1 {
-                        LineFlags(LineFlags::WRAPPED)
-                    } else {
-                        LineFlags::default()
-                    };
-                    line.mark_dirty();
-                    new_lines.push_back(line);
+                    // Pad to new_sx
+                    new_compact.resize(new_sx_usize, CompactCell::default());
+
+                    new_lines.push_back(GridLine {
+                        compact: new_compact,
+                        extended: new_ext,
+                        flags: if ci < nchunks - 1 {
+                            LineFlags(LineFlags::WRAPPED)
+                        } else {
+                            LineFlags::default()
+                        },
+                    });
                 }
             }
         }
 
         self.lines = new_lines;
 
-        // Trim excess history
         while self.lines.len() > (self.sy + self.hlimit) as usize {
             self.lines.pop_front();
         }

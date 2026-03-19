@@ -340,7 +340,6 @@ fn render_status(
     let mut pos = 0usize;
 
     // Session name: (name)
-    let session_display = format!("({})", session.name);
     if client.prefix_active {
         tty.set_cell_attrs(&CellContent {
             fg: Color::Palette(3), // yellow
@@ -348,8 +347,10 @@ fn render_status(
             ..CellContent::default()
         });
     }
-    tty.write_str(&session_display);
-    pos += session_display.len();
+    tty.write_raw(b"(");
+    tty.write_str(&session.name);
+    tty.write_raw(b")");
+    pos += session.name.len() + 2;
 
     // Copy mode indicator
     if client.mode == ClientMode::CopyMode {
@@ -378,10 +379,12 @@ fn render_status(
             continue;
         };
         let is_active = wid == active_wid;
-        let zoom_indicator = if window.zoomed.is_some() { " (Z)" } else { "" };
-        let entry = format!("{}:{}{}", window.idx, window.name, zoom_indicator);
+        let zoom = window.zoomed.is_some();
+        // Estimate entry length without allocating
+        let idx_len = if window.idx >= 10 { 2 } else { 1 };
+        let entry_len = idx_len + 1 + window.name.len() + if zoom { 4 } else { 0 };
 
-        if pos + entry.len() + 1 >= sx as usize {
+        if pos + entry_len + 1 >= sx as usize {
             break;
         }
 
@@ -401,8 +404,15 @@ fn render_status(
             });
         }
 
-        tty.write_str(&entry);
-        pos += entry.len();
+        // Write idx:name(Z) directly without format! allocation
+        {
+            use std::io::Write;
+            let _ = write!(tty.buf, "{}:{}", window.idx, window.name);
+            if zoom {
+                tty.buf.extend_from_slice(b" (Z)");
+            }
+        }
+        pos += entry_len;
 
         tty.set_cell_attrs(&CellContent {
             fg: config.status_fg,

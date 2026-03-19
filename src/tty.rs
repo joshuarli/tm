@@ -5,7 +5,7 @@ use crate::screen::CursorStyle;
 
 /// Buffered terminal output writer.
 pub struct TtyWriter {
-    buf: Vec<u8>,
+    pub buf: Vec<u8>,
     // Track current attributes to minimize escape sequences
     cur_attr: CellAttr,
     cur_fg: Color,
@@ -43,10 +43,8 @@ impl TtyWriter {
 
     /// Move cursor to (row, col) — 0-based.
     pub fn cursor_goto(&mut self, row: u32, col: u32) {
-        use std::fmt::Write;
-        let mut s = String::new();
-        write!(s, "\x1b[{};{}H", row + 1, col + 1).unwrap();
-        self.write_str(&s);
+        use std::io::Write;
+let _ = write!(self.buf, "\x1b[{};{}H", row + 1, col + 1);
     }
 
     /// Hide cursor.
@@ -69,8 +67,8 @@ impl TtyWriter {
             CursorStyle::BlinkingBeam => 5,
             CursorStyle::Beam => 6,
         };
-        let s = format!("\x1b[{n} q");
-        self.write_str(&s);
+        use std::io::Write;
+let _ = write!(self.buf, "\x1b[{n} q");
     }
 
     /// Reset all attributes.
@@ -163,49 +161,41 @@ impl TtyWriter {
     }
 
     fn write_color(&mut self, color: Color, is_fg: bool) {
+        use std::io::Write;
         match color {
             Color::Default => {
-                if is_fg {
-                    self.write_raw(b"\x1b[39m");
-                } else {
-                    self.write_raw(b"\x1b[49m");
-                }
+                self.buf.extend_from_slice(if is_fg { b"\x1b[39m" } else { b"\x1b[49m" });
             }
             Color::Palette(idx) => {
                 if idx < 8 {
-                    let base = if is_fg { 30 } else { 40 };
-                    let s = format!("\x1b[{}m", base + idx);
-                    self.write_str(&s);
+                    let code = if is_fg { 30 + idx } else { 40 + idx };
+                    let _ = write!(self.buf, "\x1b[{code}m");
                 } else if idx < 16 {
-                    let base = if is_fg { 90 } else { 100 };
-                    let s = format!("\x1b[{}m", base + idx - 8);
-                    self.write_str(&s);
+                    let code = if is_fg { 90 + idx - 8 } else { 100 + idx - 8 };
+                    let _ = write!(self.buf, "\x1b[{code}m");
                 } else {
                     let prefix = if is_fg { 38 } else { 48 };
-                    let s = format!("\x1b[{prefix};5;{idx}m");
-                    self.write_str(&s);
+                    let _ = write!(self.buf, "\x1b[{prefix};5;{idx}m");
                 }
             }
             Color::Rgb(r, g, b) => {
                 let prefix = if is_fg { 38 } else { 48 };
-                let s = format!("\x1b[{prefix};2;{r};{g};{b}m");
-                self.write_str(&s);
+                let _ = write!(self.buf, "\x1b[{prefix};2;{r};{g};{b}m");
             }
         }
     }
 
     fn write_underline_color(&mut self, color: Color) {
+        use std::io::Write;
         match color {
             Color::Default => {
-                self.write_raw(b"\x1b[59m");
+                self.buf.extend_from_slice(b"\x1b[59m");
             }
             Color::Palette(idx) => {
-                let s = format!("\x1b[58;5;{idx}m");
-                self.write_str(&s);
+                let _ = write!(self.buf, "\x1b[58;5;{idx}m");
             }
             Color::Rgb(r, g, b) => {
-                let s = format!("\x1b[58;2;{r};{g};{b}m");
-                self.write_str(&s);
+                let _ = write!(self.buf, "\x1b[58;2;{r};{g};{b}m");
             }
         }
     }
