@@ -409,17 +409,6 @@ pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
             pane.sx = geo.sx;
             pane.sy = geo.sy;
             if changed {
-                // Clear the visible area so the shell's SIGWINCH redraw starts fresh.
-                // History is preserved (grid lines aren't truncated).
-                let screen = pane.active_screen_mut();
-                let sy = screen.sy();
-                let sx_new = geo.sx;
-                for row in 0..sy {
-                    if let Some(line) = screen.grid.visible_line_mut(row) {
-                        let blank = crate::grid::CellContent::default();
-                        line.clear_range(0, sx_new, &blank);
-                    }
-                }
                 pane.screen.resize(geo.sx, geo.sy);
                 pane.alt_screen.resize(geo.sx, geo.sy);
                 let _ = crate::sys::set_winsize(pane.pty_master, geo.sx, geo.sy);
@@ -986,7 +975,7 @@ fn process_mouse(
             InputResult::None
         }
         MouseEvent::Drag { button: 0, x, y } => {
-            // Extend selection
+            // Extend selection — enter copy mode on first drag
             let Some(client) = state.clients.get(&cid) else {
                 return InputResult::None;
             };
@@ -994,10 +983,18 @@ fn process_mouse(
                 return InputResult::None;
             };
             let pid = sel.pane;
+
+            // Enter copy mode if not already in it
+            if client.mode != ClientMode::CopyMode {
+                if !pane_wants_mouse(state, pid) {
+                    enter_copy_mode(state, cid, pid);
+                }
+            }
+
             if let Some(pane) = state.panes.get(&pid) {
                 let local_col = x.saturating_sub(pane.xoff).min(pane.sx.saturating_sub(1));
                 let local_row = y.saturating_sub(pane.yoff).min(pane.sy.saturating_sub(1));
-                let oy = client.copy_oy;
+                let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
                 let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
                 if let Some(client) = state.clients.get_mut(&cid) {
                     if let Some(sel) = &mut client.sel {

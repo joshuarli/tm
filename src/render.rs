@@ -302,29 +302,6 @@ fn render_status(
         return;
     }
 
-    // Check for copy mode
-    if client.mode == ClientMode::CopyMode {
-        tty.reset_attrs();
-        tty.set_cell_attrs(&CellContent {
-            fg: Color::Palette(3), // yellow
-            bg: Color::Default,
-            attr: CellAttr(CellAttr::BOLD),
-            ..CellContent::default()
-        });
-        let display = String::from("[copy mode]");
-        let display: String = display.chars().take(sx as usize).collect();
-        tty.write_str(&display);
-        let remaining = sx as usize - display.len().min(sx as usize);
-        tty.set_cell_attrs(&CellContent {
-            bg: Color::Default,
-            ..CellContent::default()
-        });
-        for _ in 0..remaining {
-            tty.write_raw(b" ");
-        }
-        return;
-    }
-
     // Check for command prompt
     if client.mode == ClientMode::CommandPrompt {
         tty.reset_attrs();
@@ -373,6 +350,18 @@ fn render_status(
     }
     tty.write_str(&session_display);
     pos += session_display.len();
+
+    // Copy mode indicator
+    if client.mode == ClientMode::CopyMode {
+        tty.set_cell_attrs(&CellContent {
+            fg: Color::Palette(3), // yellow
+            bg: config.status_bg,
+            attr: CellAttr(CellAttr::BOLD),
+            ..CellContent::default()
+        });
+        tty.write_str("(copy)");
+        pos += 6;
+    }
 
     // Reset color for window list
     tty.set_cell_attrs(&CellContent {
