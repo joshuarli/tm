@@ -208,6 +208,8 @@ fn dispatch_action(
         }
         Action::SplitH => {
             if let Some(pid) = split_pane(state, cid, crate::layout::SplitDir::Horizontal) {
+                clear_client_screen(state, cid);
+                mark_all_dirty(state);
                 InputResult::Multi(vec![InputResult::NewPane(pid), InputResult::Redraw])
             } else {
                 InputResult::None
@@ -215,6 +217,8 @@ fn dispatch_action(
         }
         Action::SplitV => {
             if let Some(pid) = split_pane(state, cid, crate::layout::SplitDir::Vertical) {
+                clear_client_screen(state, cid);
+                mark_all_dirty(state);
                 InputResult::Multi(vec![InputResult::NewPane(pid), InputResult::Redraw])
             } else {
                 InputResult::None
@@ -277,6 +281,21 @@ fn dispatch_action(
     }
 }
 
+fn clear_client_screen(state: &State, cid: ClientId) {
+    if let Some(client) = state.clients.get(&cid) {
+        let mut tty = crate::tty::TtyWriter::new();
+        tty.clear_screen();
+        tty.flush_to(client.tty_fd).ok();
+    }
+}
+
+fn mark_all_dirty(state: &mut State) {
+    for pane in state.panes.values_mut() {
+        pane.active_screen_mut().grid.mark_all_dirty();
+        pane.flags |= crate::state::PaneFlags::REDRAW;
+    }
+}
+
 fn navigate_window(state: &mut State, cid: ClientId, delta: i32) {
     let Some(client) = state.clients.get(&cid) else {
         return;
@@ -298,6 +317,7 @@ fn navigate_window(state: &mut State, cid: ClientId, delta: i32) {
     if let Some(session) = state.sessions.get_mut(&sid) {
         session.active_window = new_wid;
     }
+    mark_all_dirty(state);
 }
 
 fn select_window_by_idx(state: &mut State, cid: ClientId, idx: u32) {
@@ -314,6 +334,7 @@ fn select_window_by_idx(state: &mut State, cid: ClientId, idx: u32) {
                 if let Some(session) = state.sessions.get_mut(&sid) {
                     session.active_window = wid;
                 }
+                mark_all_dirty(state);
                 return;
             }
         }
@@ -839,21 +860,15 @@ fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
 }
 
 fn exit_copy_mode(state: &mut State, cid: ClientId) {
-    let pane_id = state.clients.get(&cid).map(|c| c.copy_pane);
     if let Some(client) = state.clients.get_mut(&cid) {
         client.mode = ClientMode::Normal;
         client.copy_oy = 0;
         client.sel = None;
-        // Clear the screen so the full live view redraws cleanly
         let mut tty = crate::tty::TtyWriter::new();
         tty.clear_screen();
         tty.flush_to(client.tty_fd).ok();
     }
-    // Mark all panes for full redraw
-    for pane in state.panes.values_mut() {
-        pane.active_screen_mut().grid.mark_all_dirty();
-        pane.flags |= crate::state::PaneFlags::REDRAW;
-    }
+    mark_all_dirty(state);
 }
 
 fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
@@ -888,17 +903,9 @@ fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
 
 fn process_copy_input(state: &mut State, config: &Config, cid: ClientId, event: InputEvent) -> InputResult {
     match event {
-        InputEvent::Key(key) => {
-            let base = key.base();
-            match base {
-                k if k == KeyCode::ESCAPE || k == b'q' as u32 => {
-                    exit_copy_mode(state, cid);
-                    InputResult::Redraw
-                }
-                KeyCode::PAGEUP => copy_scroll(state, cid, 24),
-                KeyCode::PAGEDOWN => copy_scroll(state, cid, -24),
-                _ => InputResult::None,
-            }
+        InputEvent::Key(_) => {
+            exit_copy_mode(state, cid);
+            InputResult::Redraw
         }
         InputEvent::Mouse(MouseEvent::WheelUp { .. }) => {
             copy_scroll(state, cid, SCROLL_LINES as i32)
@@ -922,7 +929,17 @@ fn process_mouse(
 ) -> InputResult {
     match mouse {
         MouseEvent::Press { button: 0, x, y } => {
-            // Left click — focus pane + start selection
+            let Some(client) = state.clients.get(&cid) else {
+                return InputResult::None;
+            };
+            let status_row = client.sy.saturating_sub(1);
+
+            // Click on status bar — switch window
+            if y == status_row {
+                return click_status_bar(state, cid, x);
+            }
+
+            // Click on pane area — focus pane + start selection
             let Some(wid) = state.active_window_for_client(cid) else {
                 return InputResult::None;
             };
@@ -938,7 +955,6 @@ fn process_mouse(
                         window.active_pane = pid;
                     }
                 }
-                // Start selection — convert screen coords to pane-local + absolute grid row
                 if let Some(pane) = state.panes.get(&pid) {
                     let local_col = x.saturating_sub(pane.xoff);
                     let local_row = y.saturating_sub(pane.yoff);
@@ -1023,11 +1039,11 @@ fn process_mouse(
             let Some(pid) = find_pane_at(state, cid, x, y) else {
                 return InputResult::None;
             };
-            // Alt screen: send up arrows to the app
-            if state.panes.get(&pid).map_or(false, |p| p.is_alt_screen()) {
-                return InputResult::PtyWrite(pid, b"\x1b[A\x1b[A\x1b[A".to_vec());
+            // If pane wants mouse events (alt screen, or mouse tracking), forward
+            if pane_wants_mouse(state, pid) {
+                return forward_mouse_to_pane(state, pid, &mouse);
             }
-            // Normal screen: enter copy mode and scroll
+            // Normal screen without mouse tracking: enter copy mode and scroll
             enter_copy_mode(state, cid, pid);
             copy_scroll(state, cid, SCROLL_LINES as i32)
         }
@@ -1035,10 +1051,9 @@ fn process_mouse(
             let Some(pid) = find_pane_at(state, cid, x, y) else {
                 return InputResult::None;
             };
-            if state.panes.get(&pid).map_or(false, |p| p.is_alt_screen()) {
-                return InputResult::PtyWrite(pid, b"\x1b[B\x1b[B\x1b[B".to_vec());
+            if pane_wants_mouse(state, pid) {
+                return forward_mouse_to_pane(state, pid, &mouse);
             }
-            // In normal mode, wheel down does nothing (already at bottom)
             InputResult::None
         }
         _ => {
@@ -1115,6 +1130,54 @@ fn base64_encode(data: &[u8]) -> String {
         }
     }
     out
+}
+
+fn click_status_bar(state: &mut State, cid: ClientId, x: u32) -> InputResult {
+    let Some(client) = state.clients.get(&cid) else {
+        return InputResult::None;
+    };
+    let sid = client.session;
+    let Some(session) = state.sessions.get(&sid) else {
+        return InputResult::None;
+    };
+
+    // Reconstruct the status bar layout to find which window label was clicked.
+    // Format: "(session_name) 1:name 2:name ..."
+    let session_display = format!("({})", session.name);
+    let mut pos = session_display.len() + 1; // +1 for space
+
+    for &wid in &session.windows {
+        let Some(window) = state.windows.get(&wid) else {
+            continue;
+        };
+        let zoom = if window.zoomed.is_some() { " (Z)" } else { "" };
+        let entry = format!("{}:{}{}", window.idx, window.name, zoom);
+        let entry_end = pos + entry.len();
+
+        if (x as usize) >= pos && (x as usize) < entry_end {
+            // Clicked on this window
+            if let Some(session) = state.sessions.get_mut(&sid) {
+                session.active_window = wid;
+            }
+            // Full redraw for window switch
+            for pane in state.panes.values_mut() {
+                pane.active_screen_mut().grid.mark_all_dirty();
+                pane.flags |= crate::state::PaneFlags::REDRAW;
+            }
+            return InputResult::Redraw;
+        }
+        pos = entry_end + 1; // +1 for space
+    }
+    InputResult::None
+}
+
+fn pane_wants_mouse(state: &State, pid: PaneId) -> bool {
+    state.panes.get(&pid).map_or(false, |p| {
+        let mode = p.active_screen().mode;
+        p.is_alt_screen()
+            || mode.has(crate::screen::ScreenMode::MOUSE_BUTTON)
+            || mode.has(crate::screen::ScreenMode::MOUSE_ANY)
+    })
 }
 
 fn find_pane_at(state: &State, cid: ClientId, x: u32, y: u32) -> Option<PaneId> {
