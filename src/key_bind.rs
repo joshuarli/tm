@@ -1351,3 +1351,880 @@ fn key_to_bytes(key: KeyCode, state: &State, cid: ClientId) -> Vec<u8> {
 
     buf
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Action, Config};
+    use crate::grid::{CellContent, LineFlags};
+    use crate::keys::{InputEvent, KeyCode, MouseEvent};
+    use crate::layout::LayoutNode;
+    use crate::state::{
+        Client, ClientId, ClientMode, Pane, PaneId, PromptAction, Selection, SessionId, State,
+        Window, WindowId,
+    };
+
+    /// Build a minimal State with one session, one window, one pane, and one client.
+    /// Returns (state, config, client_id, pane_id, window_id, session_id).
+    fn setup() -> (State, Config, ClientId, PaneId, WindowId, SessionId) {
+        let mut state = State::new();
+        let config = Config::default_config();
+
+        let pid = state.alloc_pane_id();
+        let pane = Pane::new(pid, -1, 0, 80, 24);
+        state.panes.insert(pid, pane);
+
+        let sid = state.create_session("test", pid, 80, 25);
+        let wid = state.sessions[&sid].active_window;
+
+        let cid = state.alloc_client_id();
+        state
+            .clients
+            .insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+
+        (state, config, cid, pid, wid, sid)
+    }
+
+    // ---------------------------------------------------------------
+    // Helpers for matching InputResult (the enum has no PartialEq)
+    // ---------------------------------------------------------------
+
+    fn is_none(r: &InputResult) -> bool {
+        matches!(r, InputResult::None)
+    }
+
+    fn is_redraw(r: &InputResult) -> bool {
+        matches!(r, InputResult::Redraw)
+    }
+
+    fn is_detach(r: &InputResult) -> bool {
+        matches!(r, InputResult::Detach)
+    }
+
+    fn is_pty_write(r: &InputResult) -> bool {
+        matches!(r, InputResult::PtyWrite(..))
+    }
+
+    fn pty_write_bytes(r: &InputResult) -> Option<(&PaneId, &Vec<u8>)> {
+        match r {
+            InputResult::PtyWrite(pid, data) => Some((pid, data)),
+            _ => None,
+        }
+    }
+
+    fn is_status_message(r: &InputResult) -> bool {
+        matches!(r, InputResult::StatusMessage(..))
+    }
+
+    // =======================================================================
+    // 1. Prefix key handling
+    // =======================================================================
+
+    #[test]
+    fn pressing_prefix_activates_it() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+        let prefix = config.prefix; // Ctrl-A
+
+        let result = process_input(&mut state, &config, cid, InputEvent::Key(prefix));
+        assert!(is_redraw(&result));
+        assert!(state.clients[&cid].prefix_active);
+    }
+
+    #[test]
+    fn bound_key_after_prefix_dispatches_action() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        // Activate prefix
+        state.clients.get_mut(&cid).unwrap().prefix_active = true;
+
+        // 'd' is bound to Detach
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::char('d')),
+        );
+        assert!(is_detach(&result));
+        assert!(!state.clients[&cid].prefix_active);
+    }
+
+    #[test]
+    fn unknown_key_after_prefix_clears_prefix() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        state.clients.get_mut(&cid).unwrap().prefix_active = true;
+
+        // 'x' is not bound in default config
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::char('x')),
+        );
+        assert!(is_redraw(&result));
+        assert!(!state.clients[&cid].prefix_active);
+    }
+
+    #[test]
+    fn prefix_then_next_window() {
+        let (mut state, config, cid, _pid, _wid, sid) = setup();
+
+        // Add a second window so next-window has somewhere to go
+        let p2 = state.alloc_pane_id();
+        state.panes.insert(p2, Pane::new(p2, -1, 0, 80, 24));
+        let w2 = state.alloc_window_id();
+        let window2 = Window {
+            id: w2,
+            idx: 2,
+            name: "w2".to_string(),
+            active_pane: p2,
+            panes: vec![p2],
+            sx: 80,
+            sy: 24,
+            zoomed: None,
+            session: sid,
+            layout: LayoutNode::Pane(p2),
+        };
+        state.windows.insert(w2, window2);
+        state.sessions.get_mut(&sid).unwrap().windows.push(w2);
+
+        // Activate prefix then press Ctrl-Right (NextWindow)
+        state.clients.get_mut(&cid).unwrap().prefix_active = true;
+        let key = KeyCode(KeyCode::RIGHT | KeyCode::CTRL);
+        let result = process_input(&mut state, &config, cid, InputEvent::Key(key));
+        assert!(is_redraw(&result));
+
+        // Active window should have changed
+        assert_eq!(state.sessions[&sid].active_window, w2);
+    }
+
+    // =======================================================================
+    // 2. Key forwarding
+    // =======================================================================
+
+    #[test]
+    fn regular_key_forwarded_as_pty_write() {
+        let (mut state, config, cid, pid, _wid, _sid) = setup();
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::char('a')),
+        );
+        let (write_pid, data) = pty_write_bytes(&result).expect("expected PtyWrite");
+        assert_eq!(*write_pid, pid);
+        assert_eq!(data, &vec![b'a']);
+    }
+
+    #[test]
+    fn enter_forwarded_as_cr() {
+        let (mut state, config, cid, pid, _wid, _sid) = setup();
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode(KeyCode::ENTER)),
+        );
+        let (write_pid, data) = pty_write_bytes(&result).expect("expected PtyWrite");
+        assert_eq!(*write_pid, pid);
+        assert_eq!(data, &vec![0x0D]);
+    }
+
+    #[test]
+    fn escape_forwarded() {
+        let (mut state, config, cid, pid, _wid, _sid) = setup();
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode(KeyCode::ESCAPE)),
+        );
+        let (write_pid, data) = pty_write_bytes(&result).expect("expected PtyWrite");
+        assert_eq!(*write_pid, pid);
+        assert_eq!(data, &vec![0x1B]);
+    }
+
+    #[test]
+    fn arrow_key_forwarded_with_csi() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode(KeyCode::UP)),
+        );
+        let (_write_pid, data) = pty_write_bytes(&result).expect("expected PtyWrite");
+        assert_eq!(data, b"\x1b[A");
+    }
+
+    #[test]
+    fn no_client_returns_none() {
+        let (mut state, config, _cid, _pid, _wid, _sid) = setup();
+        let bogus = ClientId(999);
+
+        let result = process_input(
+            &mut state,
+            &config,
+            bogus,
+            InputEvent::Key(KeyCode::char('a')),
+        );
+        assert!(is_none(&result));
+    }
+
+    // =======================================================================
+    // 3. Copy mode
+    // =======================================================================
+
+    #[test]
+    fn enter_copy_mode_via_action() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        // Prefix + CopyMode binding doesn't exist by default, so invoke dispatch directly
+        let result = dispatch_action(&mut state, &config, cid, Action::CopyMode);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
+    }
+
+    #[test]
+    fn exit_copy_mode_on_keypress() {
+        let (mut state, config, cid, pid, _wid, _sid) = setup();
+
+        // Enter copy mode
+        enter_copy_mode(&mut state, cid, pid);
+        assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
+
+        // Any key exits copy mode
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::char('q')),
+        );
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
+    }
+
+    #[test]
+    fn copy_scroll_up_increases_offset() {
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+
+        // Add some history so scrolling has room
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for _ in 0..10 {
+            grid.scroll_up(0, grid.sy - 1);
+        }
+        let hsize = state.panes[&pid].screen.grid.hsize();
+        assert!(hsize >= 3, "need history for scroll test");
+
+        enter_copy_mode(&mut state, cid, pid);
+
+        let result = copy_scroll(&mut state, cid, 3);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].copy_oy, 3);
+        assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
+    }
+
+    #[test]
+    fn copy_scroll_down_to_zero_exits_copy_mode() {
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+
+        // Add some history
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for _ in 0..10 {
+            grid.scroll_up(0, grid.sy - 1);
+        }
+
+        enter_copy_mode(&mut state, cid, pid);
+        state.clients.get_mut(&cid).unwrap().copy_oy = 2;
+
+        // Scroll down past 0
+        let result = copy_scroll(&mut state, cid, -5);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
+        assert_eq!(state.clients[&cid].copy_oy, 0);
+    }
+
+    #[test]
+    fn copy_scroll_clamped_to_max_history() {
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+
+        // Add exactly 5 history lines
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for _ in 0..5 {
+            grid.scroll_up(0, grid.sy - 1);
+        }
+        let hsize = state.panes[&pid].screen.grid.hsize();
+
+        enter_copy_mode(&mut state, cid, pid);
+
+        // Try to scroll far past history
+        let result = copy_scroll(&mut state, cid, 1000);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].copy_oy, hsize);
+    }
+
+    // =======================================================================
+    // 4. Selection / extract_selection
+    // =======================================================================
+
+    #[test]
+    fn extract_selection_single_line() {
+        let (mut state, _config, _cid, pid, _wid, _sid) = setup();
+
+        // Write "Hello" on the first visible line
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for (i, ch) in b"Hello".iter().enumerate() {
+            let content = CellContent::from_ascii(*ch);
+            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+        }
+
+        let hsize = state.panes[&pid].screen.grid.hsize();
+        let sel = Selection {
+            pane: pid,
+            start_col: 0,
+            start_row: hsize,
+            end_col: 4,
+            end_row: hsize,
+        };
+
+        let text = extract_selection(&state, pid, &sel);
+        assert_eq!(text, "Hello");
+    }
+
+    #[test]
+    fn extract_selection_multi_line() {
+        let (mut state, _config, _cid, pid, _wid, _sid) = setup();
+
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for (i, ch) in b"ABC".iter().enumerate() {
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &CellContent::from_ascii(*ch));
+        }
+        for (i, ch) in b"DEF".iter().enumerate() {
+            grid.visible_line_mut(1)
+                .unwrap()
+                .set_cell(i as u32, &CellContent::from_ascii(*ch));
+        }
+
+        let hsize = state.panes[&pid].screen.grid.hsize();
+        let sel = Selection {
+            pane: pid,
+            start_col: 0,
+            start_row: hsize,
+            end_col: 2,
+            end_row: hsize + 1,
+        };
+
+        let text = extract_selection(&state, pid, &sel);
+        assert_eq!(text, "ABC\nDEF");
+    }
+
+    #[test]
+    fn extract_selection_respects_wrapped_flag() {
+        let (mut state, _config, _cid, pid, _wid, _sid) = setup();
+
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for (i, ch) in b"ABCD".iter().enumerate() {
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &CellContent::from_ascii(*ch));
+        }
+        // Mark line 0 as WRAPPED
+        grid.visible_line_mut(0).unwrap().flags = LineFlags(LineFlags::WRAPPED);
+
+        for (i, ch) in b"EFGH".iter().enumerate() {
+            grid.visible_line_mut(1)
+                .unwrap()
+                .set_cell(i as u32, &CellContent::from_ascii(*ch));
+        }
+
+        let hsize = state.panes[&pid].screen.grid.hsize();
+        let sel = Selection {
+            pane: pid,
+            start_col: 0,
+            start_row: hsize,
+            end_col: 3,
+            end_row: hsize + 1,
+        };
+
+        let text = extract_selection(&state, pid, &sel);
+        // Wrapped lines should NOT have a newline between them
+        assert_eq!(text, "ABCDEFGH");
+    }
+
+    #[test]
+    fn extract_selection_trims_trailing_spaces() {
+        let (mut state, _config, _cid, pid, _wid, _sid) = setup();
+
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        // Write "Hi" followed by spaces (default cells are spaces)
+        for (i, ch) in b"Hi".iter().enumerate() {
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &CellContent::from_ascii(*ch));
+        }
+
+        let hsize = state.panes[&pid].screen.grid.hsize();
+        let sel = Selection {
+            pane: pid,
+            start_col: 0,
+            start_row: hsize,
+            end_col: 9, // extends past "Hi" into trailing spaces
+            end_row: hsize,
+        };
+
+        let text = extract_selection(&state, pid, &sel);
+        assert_eq!(text, "Hi");
+    }
+
+    #[test]
+    fn extract_selection_reversed_coords_normalized() {
+        let (mut state, _config, _cid, pid, _wid, _sid) = setup();
+
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for (i, ch) in b"Test".iter().enumerate() {
+            grid.visible_line_mut(0)
+                .unwrap()
+                .set_cell(i as u32, &CellContent::from_ascii(*ch));
+        }
+
+        let hsize = state.panes[&pid].screen.grid.hsize();
+        // Selection is end-to-start (reversed)
+        let sel = Selection {
+            pane: pid,
+            start_col: 3,
+            start_row: hsize,
+            end_col: 0,
+            end_row: hsize,
+        };
+
+        let text = extract_selection(&state, pid, &sel);
+        assert_eq!(text, "Test");
+    }
+
+    // =======================================================================
+    // 5. Base64 encoding
+    // =======================================================================
+
+    #[test]
+    fn base64_encode_empty() {
+        assert_eq!(base64_encode(b""), "");
+    }
+
+    #[test]
+    fn base64_encode_known_vectors() {
+        // Standard test vectors
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn base64_encode_hello() {
+        assert_eq!(base64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
+    }
+
+    // =======================================================================
+    // 6. Window navigation
+    // =======================================================================
+
+    fn setup_multi_window() -> (State, Config, ClientId, SessionId, Vec<WindowId>) {
+        let mut state = State::new();
+        let config = Config::default_config();
+
+        let p1 = state.alloc_pane_id();
+        state.panes.insert(p1, Pane::new(p1, -1, 0, 80, 24));
+        let sid = state.create_session("test", p1, 80, 25);
+        let w1 = state.sessions[&sid].active_window;
+
+        let p2 = state.alloc_pane_id();
+        state.panes.insert(p2, Pane::new(p2, -1, 0, 80, 24));
+        let w2 = state.alloc_window_id();
+        state.windows.insert(
+            w2,
+            Window {
+                id: w2,
+                idx: 2,
+                name: "w2".to_string(),
+                active_pane: p2,
+                panes: vec![p2],
+                sx: 80,
+                sy: 24,
+                zoomed: None,
+                session: sid,
+                layout: LayoutNode::Pane(p2),
+            },
+        );
+        state.sessions.get_mut(&sid).unwrap().windows.push(w2);
+
+        let p3 = state.alloc_pane_id();
+        state.panes.insert(p3, Pane::new(p3, -1, 0, 80, 24));
+        let w3 = state.alloc_window_id();
+        state.windows.insert(
+            w3,
+            Window {
+                id: w3,
+                idx: 3,
+                name: "w3".to_string(),
+                active_pane: p3,
+                panes: vec![p3],
+                sx: 80,
+                sy: 24,
+                zoomed: None,
+                session: sid,
+                layout: LayoutNode::Pane(p3),
+            },
+        );
+        state.sessions.get_mut(&sid).unwrap().windows.push(w3);
+
+        let cid = state.alloc_client_id();
+        state
+            .clients
+            .insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+
+        (state, config, cid, sid, vec![w1, w2, w3])
+    }
+
+    #[test]
+    fn navigate_window_forward() {
+        let (mut state, _config, cid, sid, wins) = setup_multi_window();
+        assert_eq!(state.sessions[&sid].active_window, wins[0]);
+
+        navigate_window(&mut state, cid, 1);
+        assert_eq!(state.sessions[&sid].active_window, wins[1]);
+
+        navigate_window(&mut state, cid, 1);
+        assert_eq!(state.sessions[&sid].active_window, wins[2]);
+    }
+
+    #[test]
+    fn navigate_window_wraps_forward() {
+        let (mut state, _config, cid, sid, wins) = setup_multi_window();
+
+        // Go to last window
+        navigate_window(&mut state, cid, 1);
+        navigate_window(&mut state, cid, 1);
+        assert_eq!(state.sessions[&sid].active_window, wins[2]);
+
+        // Next should wrap to first
+        navigate_window(&mut state, cid, 1);
+        assert_eq!(state.sessions[&sid].active_window, wins[0]);
+    }
+
+    #[test]
+    fn navigate_window_wraps_backward() {
+        let (mut state, _config, cid, sid, wins) = setup_multi_window();
+        assert_eq!(state.sessions[&sid].active_window, wins[0]);
+
+        // Previous should wrap to last
+        navigate_window(&mut state, cid, -1);
+        assert_eq!(state.sessions[&sid].active_window, wins[2]);
+    }
+
+    #[test]
+    fn select_window_by_idx_finds_correct_window() {
+        let (mut state, _config, cid, sid, wins) = setup_multi_window();
+
+        select_window_by_idx(&mut state, cid, 2);
+        assert_eq!(state.sessions[&sid].active_window, wins[1]);
+
+        select_window_by_idx(&mut state, cid, 3);
+        assert_eq!(state.sessions[&sid].active_window, wins[2]);
+
+        select_window_by_idx(&mut state, cid, 1);
+        assert_eq!(state.sessions[&sid].active_window, wins[0]);
+    }
+
+    #[test]
+    fn select_window_by_idx_nonexistent_is_noop() {
+        let (mut state, _config, cid, sid, wins) = setup_multi_window();
+
+        select_window_by_idx(&mut state, cid, 99);
+        // Active window unchanged
+        assert_eq!(state.sessions[&sid].active_window, wins[0]);
+    }
+
+    #[test]
+    fn dispatch_select_window_action() {
+        let (mut state, config, cid, sid, wins) = setup_multi_window();
+
+        let result = dispatch_action(&mut state, &config, cid, Action::SelectWindow(2));
+        assert!(is_redraw(&result));
+        assert_eq!(state.sessions[&sid].active_window, wins[1]);
+    }
+
+    // =======================================================================
+    // 7. Prompt input
+    // =======================================================================
+
+    #[test]
+    fn prompt_escape_exits() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        // Enter prompt mode
+        {
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.mode = ClientMode::CommandPrompt;
+            client.prompt_buf = Some(String::new());
+            client.prompt_action = Some(PromptAction::Command);
+        }
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode(KeyCode::ESCAPE)),
+        );
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
+        assert!(state.clients[&cid].prompt_buf.is_none());
+        assert!(state.clients[&cid].prompt_action.is_none());
+    }
+
+    #[test]
+    fn prompt_printable_chars_append() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        {
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.mode = ClientMode::CommandPrompt;
+            client.prompt_buf = Some(String::new());
+            client.prompt_action = Some(PromptAction::RenameWindow);
+        }
+
+        process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::char('h')),
+        );
+        process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::char('i')),
+        );
+
+        assert_eq!(
+            state.clients[&cid].prompt_buf.as_deref(),
+            Some("hi")
+        );
+    }
+
+    #[test]
+    fn prompt_backspace_deletes() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        {
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.mode = ClientMode::CommandPrompt;
+            client.prompt_buf = Some("abc".to_string());
+            client.prompt_action = Some(PromptAction::RenameWindow);
+        }
+
+        process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode(KeyCode::BACKSPACE)),
+        );
+
+        assert_eq!(
+            state.clients[&cid].prompt_buf.as_deref(),
+            Some("ab")
+        );
+    }
+
+    #[test]
+    fn prompt_enter_rename_window() {
+        let (mut state, config, cid, _pid, wid, _sid) = setup();
+
+        {
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.mode = ClientMode::CommandPrompt;
+            client.prompt_buf = Some("newname".to_string());
+            client.prompt_action = Some(PromptAction::RenameWindow);
+        }
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode(KeyCode::ENTER)),
+        );
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
+        assert_eq!(state.windows[&wid].name, "newname");
+    }
+
+    #[test]
+    fn prompt_ctrl_keys_ignored() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        {
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.mode = ClientMode::CommandPrompt;
+            client.prompt_buf = Some(String::new());
+            client.prompt_action = Some(PromptAction::Command);
+        }
+
+        // Ctrl-X should not add anything
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Key(KeyCode::ctrl('x')),
+        );
+        assert!(is_none(&result));
+        assert_eq!(
+            state.clients[&cid].prompt_buf.as_deref(),
+            Some("")
+        );
+    }
+
+    #[test]
+    fn prompt_mouse_ignored() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        {
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.mode = ClientMode::CommandPrompt;
+            client.prompt_buf = Some(String::new());
+            client.prompt_action = Some(PromptAction::Command);
+        }
+
+        let result = process_input(
+            &mut state,
+            &config,
+            cid,
+            InputEvent::Mouse(MouseEvent::Press {
+                button: 0,
+                x: 5,
+                y: 5,
+            }),
+        );
+        assert!(is_none(&result));
+    }
+
+    // =======================================================================
+    // Additional dispatch tests
+    // =======================================================================
+
+    #[test]
+    fn dispatch_command_prompt_enters_prompt_mode() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        let result = dispatch_action(&mut state, &config, cid, Action::CommandPrompt);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::CommandPrompt);
+        assert!(state.clients[&cid].prompt_buf.is_some());
+        assert!(matches!(
+            state.clients[&cid].prompt_action,
+            Some(PromptAction::Command)
+        ));
+    }
+
+    #[test]
+    fn dispatch_reload_config_returns_status_message() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        let result = dispatch_action(&mut state, &config, cid, Action::ReloadConfig);
+        assert!(is_status_message(&result));
+    }
+
+    #[test]
+    fn dispatch_new_window_enters_prompt() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        let result = dispatch_action(&mut state, &config, cid, Action::NewWindow);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::CommandPrompt);
+        assert!(matches!(
+            state.clients[&cid].prompt_action,
+            Some(PromptAction::NewWindow)
+        ));
+    }
+
+    #[test]
+    fn dispatch_rename_window_enters_prompt() {
+        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+
+        let result = dispatch_action(&mut state, &config, cid, Action::RenameWindow);
+        assert!(is_redraw(&result));
+        assert_eq!(state.clients[&cid].mode, ClientMode::CommandPrompt);
+        assert!(matches!(
+            state.clients[&cid].prompt_action,
+            Some(PromptAction::RenameWindow)
+        ));
+    }
+
+    #[test]
+    fn swap_window_reorders() {
+        let (mut state, _config, cid, sid, wins) = setup_multi_window();
+
+        // Swap right from first window
+        swap_window(&mut state, cid, 1);
+        let session = &state.sessions[&sid];
+        // w1 and w2 should be swapped in the windows list
+        assert_eq!(session.windows[0], wins[1]);
+        assert_eq!(session.windows[1], wins[0]);
+    }
+
+    // =======================================================================
+    // key_to_bytes
+    // =======================================================================
+
+    #[test]
+    fn key_to_bytes_ctrl_char() {
+        let (state, _config, cid, _pid, _wid, _sid) = setup();
+        let bytes = key_to_bytes(KeyCode::ctrl('c'), &state, cid);
+        assert_eq!(bytes, vec![3]); // Ctrl-C = 0x03
+    }
+
+    #[test]
+    fn key_to_bytes_backspace() {
+        let (state, _config, cid, _pid, _wid, _sid) = setup();
+        let bytes = key_to_bytes(KeyCode(KeyCode::BACKSPACE), &state, cid);
+        assert_eq!(bytes, vec![0x7F]);
+    }
+
+    #[test]
+    fn key_to_bytes_tab() {
+        let (state, _config, cid, _pid, _wid, _sid) = setup();
+        let bytes = key_to_bytes(KeyCode(KeyCode::TAB), &state, cid);
+        assert_eq!(bytes, vec![0x09]);
+    }
+
+    #[test]
+    fn key_to_bytes_shift_tab() {
+        let (state, _config, cid, _pid, _wid, _sid) = setup();
+        let bytes = key_to_bytes(KeyCode(KeyCode::TAB | KeyCode::SHIFT), &state, cid);
+        assert_eq!(bytes, b"\x1b[Z");
+    }
+
+    #[test]
+    fn key_to_bytes_function_keys() {
+        let (state, _config, cid, _pid, _wid, _sid) = setup();
+
+        assert_eq!(
+            key_to_bytes(KeyCode(KeyCode::F1), &state, cid),
+            b"\x1bOP"
+        );
+        assert_eq!(
+            key_to_bytes(KeyCode(KeyCode::F5), &state, cid),
+            b"\x1b[15~"
+        );
+        assert_eq!(
+            key_to_bytes(KeyCode(KeyCode::F12), &state, cid),
+            b"\x1b[24~"
+        );
+    }
+}

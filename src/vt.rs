@@ -1299,4 +1299,119 @@ mod tests {
         let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(1);
         assert_eq!(cell.ch[0], b'D');
     }
+
+    #[test]
+    fn test_sgr_multiple_params_in_one_sequence() {
+        let mut pane = make_test_pane(80, 24);
+        // Bold (1) + red fg (31) + green bg (42) in a single sequence
+        process_pane_output(&mut pane, b"\x1b[1;31;42mX");
+        let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'X');
+        assert!(cell.attr.has(CellAttr::BOLD));
+        assert_eq!(cell.fg, Color::Palette(1)); // red
+        assert_eq!(cell.bg, Color::Palette(2)); // green
+    }
+
+    #[test]
+    fn test_sgr_reset_clears_all() {
+        let mut pane = make_test_pane(80, 24);
+        // Set bold + italic + red fg, then reset, then write
+        process_pane_output(&mut pane, b"\x1b[1;3;31m");
+        assert!(pane.screen.cell.attr.has(CellAttr::BOLD));
+        assert!(pane.screen.cell.attr.has(CellAttr::ITALIC));
+        assert_eq!(pane.screen.cell.fg, Color::Palette(1));
+
+        process_pane_output(&mut pane, b"\x1b[0m");
+        assert!(!pane.screen.cell.attr.has(CellAttr::BOLD));
+        assert!(!pane.screen.cell.attr.has(CellAttr::ITALIC));
+        assert!(matches!(pane.screen.cell.fg, Color::Default));
+        assert!(matches!(pane.screen.cell.bg, Color::Default));
+    }
+
+    #[test]
+    fn test_insert_mode() {
+        let mut pane = make_test_pane(80, 5);
+        process_pane_output(&mut pane, b"ABCDE");
+        // Enable insert mode
+        process_pane_output(&mut pane, b"\x1b[4h");
+        assert!(pane.screen.mode.has(ScreenMode::INSERT));
+
+        // Move to col 2, write 'X' in insert mode — should shift CDE right
+        process_pane_output(&mut pane, b"\x1b[3G");
+        process_pane_output(&mut pane, b"X");
+
+        let line = pane.screen.grid.visible_line(0).unwrap();
+        assert_eq!(line.get_cell(0).ch[0], b'A');
+        assert_eq!(line.get_cell(1).ch[0], b'B');
+        assert_eq!(line.get_cell(2).ch[0], b'X');
+        assert_eq!(line.get_cell(3).ch[0], b'C');
+        assert_eq!(line.get_cell(4).ch[0], b'D');
+        assert_eq!(line.get_cell(5).ch[0], b'E');
+    }
+
+    #[test]
+    fn test_device_attributes_no_panic() {
+        let mut pane = make_test_pane(80, 24);
+        // DA1: should trigger a write_back (which will fail silently on fd -1)
+        // but should not panic and should not alter screen content
+        process_pane_output(&mut pane, b"Hello\x1b[c");
+        // Screen should still have "Hello"
+        let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'H');
+        assert_eq!(pane.screen.cx, 5);
+    }
+
+    #[test]
+    fn test_tab_advances_to_next_stop() {
+        let mut pane = make_test_pane(80, 24);
+        // Default tab stops every 8 cols. Cursor starts at 0.
+        process_pane_output(&mut pane, b"\x09");
+        assert_eq!(pane.screen.cx, 8);
+
+        // Tab again should go to 16
+        process_pane_output(&mut pane, b"\x09");
+        assert_eq!(pane.screen.cx, 16);
+    }
+
+    #[test]
+    fn test_tab_clear_all() {
+        let mut pane = make_test_pane(80, 24);
+        // Clear all tab stops
+        process_pane_output(&mut pane, b"\x1b[3g");
+        // Now tab should go all the way to the right margin
+        process_pane_output(&mut pane, b"\x09");
+        assert_eq!(pane.screen.cx, 79);
+    }
+
+    #[test]
+    fn test_multiple_cursor_movements() {
+        let mut pane = make_test_pane(80, 24);
+        // Move to (5,10), then right 3, down 2, left 1
+        process_pane_output(&mut pane, b"\x1b[6;11H\x1b[3C\x1b[2B\x1b[1D");
+        assert_eq!(pane.screen.cx, 12); // 10 + 3 - 1
+        assert_eq!(pane.screen.cy, 7); // 5 + 2
+    }
+
+    #[test]
+    fn test_dcs_passthrough_no_crash() {
+        let mut pane = make_test_pane(80, 24);
+        // DCS sequence with payload, terminated by ST
+        process_pane_output(&mut pane, b"\x1bPsome DCS payload\x1b\\");
+        // After DCS+ST, parser should be back in ground state.
+        // Write a normal character to verify.
+        process_pane_output(&mut pane, b"Z");
+        let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'Z');
+    }
+
+    #[test]
+    fn test_unknown_sequences_consumed_silently() {
+        let mut pane = make_test_pane(80, 24);
+        // Feed an unknown CSI sequence, then a normal character
+        process_pane_output(&mut pane, b"\x1b[999zABC");
+        // Parser should recover and print ABC
+        let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'A');
+        assert_eq!(pane.screen.cx, 3);
+    }
 }

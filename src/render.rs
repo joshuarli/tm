@@ -447,3 +447,60 @@ pub(crate) fn clear_dirty(state: &mut State, cid: ClientId) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::Config;
+    use crate::state::{Client, Pane, PaneFlags, State};
+    use crate::tty::TtyWriter;
+
+    fn make_test_state() -> (State, crate::state::ClientId) {
+        let mut state = State::new();
+        let pid = state.alloc_pane_id();
+        let pane = Pane::new(pid, -1, 0, 80, 24);
+        state.panes.insert(pid, pane);
+        let sid = state.create_session("test", pid, 80, 25);
+        let cid = state.alloc_client_id();
+        state.clients.insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+        (state, cid)
+    }
+
+    #[test]
+    fn clear_dirty_clears_flags() {
+        let (mut state, cid) = make_test_state();
+
+        // Mark cells dirty on the pane's grid
+        let pid = state.active_pane_for_client(cid).unwrap();
+        {
+            let pane = state.panes.get_mut(&pid).unwrap();
+            let screen = pane.active_screen_mut();
+            let line = screen.grid.visible_line_mut(0).unwrap();
+            line.compact[0].set_dirty();
+            line.compact[1].set_dirty();
+            assert!(line.compact[0].is_dirty());
+        }
+
+        super::clear_dirty(&mut state, cid);
+
+        // After clearing, dirty flags should be gone
+        let pane = state.panes.get(&pid).unwrap();
+        let screen = pane.active_screen();
+        let line = screen.grid.line(screen.grid.hsize()).unwrap();
+        assert!(!line.compact[0].is_dirty());
+        assert!(!line.compact[1].is_dirty());
+        assert_eq!(pane.flags, PaneFlags::NONE);
+    }
+
+    #[test]
+    fn render_client_no_panic() {
+        let (state, cid) = make_test_state();
+        let config = Config::default_config();
+        let mut tty = TtyWriter::new();
+
+        // Should not panic with a properly constructed state
+        super::render_client(&state, &config, cid, &mut tty);
+
+        // The tty buffer should have some output (at minimum sync_begin, cursor_hide, etc.)
+        assert!(!tty.is_empty());
+    }
+}

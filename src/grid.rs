@@ -742,4 +742,203 @@ mod tests {
         assert_eq!(row0.get_cell(9).ch[0], b'J');
         assert!(!row0.flags.has(LineFlags::WRAPPED));
     }
+
+    #[test]
+    fn test_scroll_down_content_shifts() {
+        let mut grid = Grid::new(10, 5, 100);
+        // Write 'A' on the top visible line
+        let content = CellContent::from_ascii(b'A');
+        grid.visible_line_mut(0).unwrap().set_cell(0, &content);
+        // Write 'B' on the second visible line
+        let content_b = CellContent::from_ascii(b'B');
+        grid.visible_line_mut(1).unwrap().set_cell(0, &content_b);
+
+        grid.scroll_down(0, 4);
+
+        // After scroll_down: new blank line at top, old lines shift down by 1
+        let top_cell = grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(top_cell.ch[0], b' '); // new blank line at top
+
+        let row1_cell = grid.visible_line(1).unwrap().get_cell(0);
+        assert_eq!(row1_cell.ch[0], b'A'); // 'A' moved from row 0 to row 1
+
+        let row2_cell = grid.visible_line(2).unwrap().get_cell(0);
+        assert_eq!(row2_cell.ch[0], b'B'); // 'B' moved from row 1 to row 2
+    }
+
+    #[test]
+    fn test_scroll_up_with_scroll_region() {
+        let mut grid = Grid::new(10, 5, 100);
+        // Write identifiable chars on each row
+        for row in 0..5u32 {
+            let content = CellContent::from_ascii(b'A' + row as u8);
+            grid.visible_line_mut(row).unwrap().set_cell(0, &content);
+        }
+
+        // Scroll up only the region rows 1..3
+        grid.scroll_up(1, 3);
+
+        // Row 0 should be untouched
+        assert_eq!(grid.visible_line(0).unwrap().get_cell(0).ch[0], b'A');
+        // Row 1 should now have what was on row 2 ('C')
+        assert_eq!(grid.visible_line(1).unwrap().get_cell(0).ch[0], b'C');
+        // Row 2 should now have what was on row 3 ('D')
+        assert_eq!(grid.visible_line(2).unwrap().get_cell(0).ch[0], b'D');
+        // Row 3 should be blank (new line)
+        assert_eq!(grid.visible_line(3).unwrap().get_cell(0).ch[0], b' ');
+        // Row 4 should be untouched
+        assert_eq!(grid.visible_line(4).unwrap().get_cell(0).ch[0], b'E');
+    }
+
+    #[test]
+    fn test_scroll_up_marks_all_visible_dirty() {
+        let mut grid = Grid::new(10, 5, 100);
+        // Clear all dirty flags first
+        for row in 0..5u32 {
+            if let Some(line) = grid.visible_line_mut(row) {
+                for c in &mut line.compact {
+                    c.clear_dirty();
+                }
+            }
+        }
+
+        // Full-screen scroll up
+        grid.scroll_up(0, 4);
+
+        // All visible lines should be dirty
+        for row in 0..5u32 {
+            let line = grid.visible_line(row).unwrap();
+            assert!(
+                line.compact[0].is_dirty(),
+                "row {row} should be dirty after scroll_up"
+            );
+        }
+    }
+
+    #[test]
+    fn test_gridline_clear_range() {
+        let mut line = GridLine::new(10);
+        // Fill with 'X'
+        for col in 0..10u32 {
+            let content = CellContent::from_ascii(b'X');
+            line.set_cell(col, &content);
+        }
+        // Clear dirty flags
+        for c in &mut line.compact {
+            c.clear_dirty();
+        }
+
+        let blank = CellContent::default();
+        line.clear_range(3, 7, &blank);
+
+        // Columns 0-2 should still be 'X'
+        for col in 0..3u32 {
+            assert_eq!(line.get_cell(col).ch[0], b'X');
+        }
+        // Columns 3-6 should be cleared to space
+        for col in 3..7u32 {
+            assert_eq!(line.get_cell(col).ch[0], b' ');
+            assert!(line.compact[col as usize].is_dirty());
+        }
+        // Columns 7-9 should still be 'X'
+        for col in 7..10u32 {
+            assert_eq!(line.get_cell(col).ch[0], b'X');
+        }
+    }
+
+    #[test]
+    fn test_gridline_extended_cell_rgb_roundtrip() {
+        let mut line = GridLine::new(10);
+        let content = CellContent {
+            ch: {
+                let mut b = [0u8; 8];
+                b[0] = b'Q';
+                b
+            },
+            ch_len: 1,
+            ch_width: 1,
+            attr: CellAttr::default(),
+            fg: Color::Rgb(10, 20, 30),
+            bg: Color::Rgb(100, 200, 255),
+            us: Color::Default,
+        };
+        line.set_cell(2, &content);
+
+        assert!(line.compact[2].is_extended());
+        let got = line.get_cell(2);
+        assert_eq!(got.ch[0], b'Q');
+        assert_eq!(got.fg, Color::Rgb(10, 20, 30));
+        assert_eq!(got.bg, Color::Rgb(100, 200, 255));
+    }
+
+    #[test]
+    fn test_hsize_after_multiple_scrolls() {
+        let mut grid = Grid::new(10, 5, 100);
+        assert_eq!(grid.hsize(), 0);
+
+        // Each full-screen scroll_up adds one history line
+        grid.scroll_up(0, 4);
+        assert_eq!(grid.hsize(), 1);
+
+        grid.scroll_up(0, 4);
+        assert_eq!(grid.hsize(), 2);
+
+        grid.scroll_up(0, 4);
+        assert_eq!(grid.hsize(), 3);
+
+        // Verify total line count = history + visible
+        assert_eq!(grid.lines.len(), (grid.hsize() + grid.sy) as usize);
+    }
+
+    #[test]
+    fn test_reflow_empty_lines_pass_through() {
+        // Grid with all blank lines
+        let mut grid = Grid::new(10, 5, 100);
+        // No content written — all lines are blank
+
+        // Reflow to a different width
+        grid.resize(20, 5);
+
+        // Should still have at least 5 visible lines, all blank
+        assert!(grid.lines.len() >= 5);
+        for row in 0..5u32 {
+            let cell = grid.visible_line(row).unwrap().get_cell(0);
+            assert_eq!(cell.ch[0], b' ');
+        }
+    }
+
+    #[test]
+    fn test_reflow_roundtrip_wrap_unwrap() {
+        // Write 8 chars on a 10-col grid, shrink to 5, expand back to 10
+        let mut grid = Grid::new(10, 5, 100);
+        let chars = b"ABCDEFGH";
+        for (i, &ch) in chars.iter().enumerate() {
+            let content = CellContent::from_ascii(ch);
+            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+        }
+
+        // Shrink to 5: "ABCDEFGH" splits into "ABCDE" (wrapped) + "FGH"
+        grid.resize(5, 5);
+
+        // Expand back to 10: should merge back into one line "ABCDEFGH"
+        grid.resize(10, 5);
+
+        // Find where 'A' starts
+        let mut found = None;
+        for idx in 0..grid.lines.len() {
+            let cell = grid.lines[idx].get_cell(0);
+            if cell.ch[0] == b'A' {
+                found = Some(idx);
+                break;
+            }
+        }
+        let start = found.expect("should find 'A'");
+        let row = &grid.lines[start];
+
+        // All 8 chars should be on one line
+        for (i, &ch) in chars.iter().enumerate() {
+            assert_eq!(row.get_cell(i as u32).ch[0], ch);
+        }
+        assert!(!row.flags.has(LineFlags::WRAPPED));
+    }
 }

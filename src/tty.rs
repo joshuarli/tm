@@ -315,3 +315,167 @@ impl TtyWriter {
         self.buf.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::{CellContent, Color};
+
+    fn new_writer() -> TtyWriter {
+        TtyWriter::new()
+    }
+
+    #[test]
+    fn cursor_goto_produces_correct_sequence() {
+        let mut w = new_writer();
+        // cursor_goto is 0-based, output is 1-based
+        w.cursor_goto(0, 0);
+        assert_eq!(w.buf, b"\x1b[1;1H");
+
+        w.buf.clear();
+        w.cursor_goto(4, 9);
+        assert_eq!(w.buf, b"\x1b[5;10H");
+    }
+
+    #[test]
+    fn cursor_hide_show() {
+        let mut w = new_writer();
+        w.cursor_hide();
+        assert_eq!(w.buf, b"\x1b[?25l");
+
+        w.buf.clear();
+        w.cursor_show();
+        assert_eq!(w.buf, b"\x1b[?25h");
+    }
+
+    #[test]
+    fn reset_attrs_sequence() {
+        let mut w = new_writer();
+        w.reset_attrs();
+        assert_eq!(w.buf, b"\x1b[0m");
+    }
+
+    #[test]
+    fn set_cell_attrs_default_color() {
+        let mut w = new_writer();
+        // A cell with all defaults but different from the writer's initial state
+        // shouldn't need any output since the writer starts at defaults too.
+        let cell = CellContent::default();
+        w.set_cell_attrs(&cell);
+        assert!(w.buf.is_empty(), "no output when attrs match current state");
+    }
+
+    #[test]
+    fn set_cell_attrs_no_change_no_output() {
+        let mut w = new_writer();
+        let cell = CellContent {
+            fg: Color::Palette(1),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let first_len = w.buf.len();
+        assert!(first_len > 0);
+
+        // Call again with the same cell -- should produce no additional output
+        w.set_cell_attrs(&cell);
+        assert_eq!(w.buf.len(), first_len, "repeated set_cell_attrs with same state should produce no output");
+    }
+
+    #[test]
+    fn set_cell_attrs_palette_fg() {
+        let mut w = new_writer();
+        // Palette index < 8 uses 30+idx for fg
+        let cell = CellContent {
+            fg: Color::Palette(3),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let out = String::from_utf8_lossy(&w.buf);
+        assert!(out.contains("\x1b[33m"), "palette 3 fg should be \\x1b[33m, got: {out}");
+    }
+
+    #[test]
+    fn set_cell_attrs_palette_bg() {
+        let mut w = new_writer();
+        // Palette index < 8 uses 40+idx for bg
+        let cell = CellContent {
+            bg: Color::Palette(5),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let out = String::from_utf8_lossy(&w.buf);
+        assert!(out.contains("\x1b[45m"), "palette 5 bg should be \\x1b[45m, got: {out}");
+    }
+
+    #[test]
+    fn set_cell_attrs_palette_bright() {
+        let mut w = new_writer();
+        // Palette 8-15 uses 90+idx-8 for fg
+        let cell = CellContent {
+            fg: Color::Palette(10),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let out = String::from_utf8_lossy(&w.buf);
+        assert!(out.contains("\x1b[92m"), "palette 10 fg should be \\x1b[92m, got: {out}");
+    }
+
+    #[test]
+    fn set_cell_attrs_palette_256() {
+        let mut w = new_writer();
+        // Palette >= 16 uses 38;5;idx
+        let cell = CellContent {
+            fg: Color::Palette(200),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let out = String::from_utf8_lossy(&w.buf);
+        assert!(out.contains("\x1b[38;5;200m"), "palette 200 fg should use 256-color, got: {out}");
+    }
+
+    #[test]
+    fn set_cell_attrs_rgb_fg() {
+        let mut w = new_writer();
+        let cell = CellContent {
+            fg: Color::Rgb(100, 150, 200),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let out = String::from_utf8_lossy(&w.buf);
+        assert!(out.contains("\x1b[38;2;100;150;200m"), "rgb fg, got: {out}");
+    }
+
+    #[test]
+    fn set_cell_attrs_rgb_bg() {
+        let mut w = new_writer();
+        let cell = CellContent {
+            bg: Color::Rgb(10, 20, 30),
+            ..CellContent::default()
+        };
+        w.set_cell_attrs(&cell);
+        let out = String::from_utf8_lossy(&w.buf);
+        assert!(out.contains("\x1b[48;2;10;20;30m"), "rgb bg, got: {out}");
+    }
+
+    #[test]
+    fn sync_begin_end() {
+        let mut w = new_writer();
+        w.sync_begin();
+        assert_eq!(w.buf, b"\x1b[?2026h");
+
+        w.buf.clear();
+        w.sync_end();
+        assert_eq!(w.buf, b"\x1b[?2026l");
+    }
+
+    #[test]
+    fn enable_disable_mouse() {
+        let mut w = new_writer();
+        w.enable_mouse();
+        assert_eq!(w.buf, b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+
+        w.buf.clear();
+        w.disable_mouse();
+        assert_eq!(w.buf, b"\x1b[?1006l\x1b[?1002l\x1b[?1000l");
+    }
+}

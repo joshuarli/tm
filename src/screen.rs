@@ -563,4 +563,225 @@ mod tests {
         assert!(s.cx < 40);
         assert!(s.cy < 12);
     }
+
+    #[test]
+    fn test_delete_chars_shifts_left() {
+        let mut s = Screen::new(10, 5);
+        // Write "ABCDE" on row 0
+        for (i, ch) in b"ABCDE".iter().enumerate() {
+            s.cursor_to(0, i as u32);
+            s.put_char(&[*ch, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        // Move to col 1, delete 2 chars
+        s.cursor_to(0, 1);
+        s.delete_chars(2);
+
+        // 'B' and 'C' removed; 'D' shifts to col 1, 'E' to col 2
+        let line = s.grid.visible_line(0).unwrap();
+        assert_eq!(line.get_cell(0).ch[0], b'A');
+        assert_eq!(line.get_cell(1).ch[0], b'D');
+        assert_eq!(line.get_cell(2).ch[0], b'E');
+        // Cells past original content should be blank
+        assert_eq!(line.get_cell(3).ch[0], b' ');
+        assert_eq!(line.get_cell(4).ch[0], b' ');
+    }
+
+    #[test]
+    fn test_insert_lines_shifts_down() {
+        let mut s = Screen::new(10, 5);
+        // Put identifiable char on each row
+        for row in 0..5u32 {
+            s.cursor_to(row, 0);
+            s.put_char(&[b'A' + row as u8, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        // Set scroll region to full screen (default), move cursor to row 1
+        s.cursor_to(1, 0);
+        s.insert_lines(1);
+
+        // Row 0 untouched
+        assert_eq!(s.grid.visible_line(0).unwrap().get_cell(0).ch[0], b'A');
+        // Row 1 should now be blank (inserted line)
+        assert_eq!(s.grid.visible_line(1).unwrap().get_cell(0).ch[0], b' ');
+        // Row 2 should have what was on row 1 ('B')
+        assert_eq!(s.grid.visible_line(2).unwrap().get_cell(0).ch[0], b'B');
+        // Row 3 should have what was on row 2 ('C')
+        assert_eq!(s.grid.visible_line(3).unwrap().get_cell(0).ch[0], b'C');
+        // Row 4 should have what was on row 3 ('D')
+        assert_eq!(s.grid.visible_line(4).unwrap().get_cell(0).ch[0], b'D');
+        // 'E' (originally row 4) scrolled off the bottom
+    }
+
+    #[test]
+    fn test_delete_lines_shifts_up() {
+        let mut s = Screen::new(10, 5);
+        for row in 0..5u32 {
+            s.cursor_to(row, 0);
+            s.put_char(&[b'A' + row as u8, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        // Move cursor to row 1, delete 1 line
+        s.cursor_to(1, 0);
+        s.delete_lines(1);
+
+        // Row 0 untouched
+        assert_eq!(s.grid.visible_line(0).unwrap().get_cell(0).ch[0], b'A');
+        // Row 1 should have what was on row 2 ('C')
+        assert_eq!(s.grid.visible_line(1).unwrap().get_cell(0).ch[0], b'C');
+        // Row 2 should have what was on row 3 ('D')
+        assert_eq!(s.grid.visible_line(2).unwrap().get_cell(0).ch[0], b'D');
+        // Row 3 should have what was on row 4 ('E')
+        assert_eq!(s.grid.visible_line(3).unwrap().get_cell(0).ch[0], b'E');
+        // Row 4 should be blank (new line at bottom of region)
+        assert_eq!(s.grid.visible_line(4).unwrap().get_cell(0).ch[0], b' ');
+    }
+
+    #[test]
+    fn test_erase_display_mode_0_cursor_to_end() {
+        let mut s = Screen::new(10, 5);
+        // Fill rows 0-4 with characters
+        for row in 0..5u32 {
+            for col in 0..10u32 {
+                s.cursor_to(row, col);
+                s.put_char(b"X\0\0\0\0\0\0\0", 1, 1);
+            }
+        }
+        // Place cursor at row 2, col 5
+        s.cursor_to(2, 5);
+        s.erase_display(0);
+
+        // Row 2, cols 0-4 should still have 'X'
+        for col in 0..5u32 {
+            assert_eq!(s.grid.visible_line(2).unwrap().get_cell(col).ch[0], b'X');
+        }
+        // Row 2, cols 5-9 should be blank
+        for col in 5..10u32 {
+            assert_eq!(s.grid.visible_line(2).unwrap().get_cell(col).ch[0], b' ');
+        }
+        // Rows 3-4 should be entirely blank
+        for row in 3..5u32 {
+            for col in 0..10u32 {
+                assert_eq!(s.grid.visible_line(row).unwrap().get_cell(col).ch[0], b' ');
+            }
+        }
+        // Rows 0-1 should be untouched
+        for row in 0..2u32 {
+            assert_eq!(s.grid.visible_line(row).unwrap().get_cell(0).ch[0], b'X');
+        }
+    }
+
+    #[test]
+    fn test_erase_display_mode_1_start_to_cursor() {
+        let mut s = Screen::new(10, 5);
+        // Fill all with 'X'
+        for row in 0..5u32 {
+            for col in 0..10u32 {
+                s.cursor_to(row, col);
+                s.put_char(b"X\0\0\0\0\0\0\0", 1, 1);
+            }
+        }
+        // Place cursor at row 2, col 5
+        s.cursor_to(2, 5);
+        s.erase_display(1);
+
+        // Rows 0-1 should be entirely blank
+        for row in 0..2u32 {
+            for col in 0..10u32 {
+                assert_eq!(s.grid.visible_line(row).unwrap().get_cell(col).ch[0], b' ');
+            }
+        }
+        // Row 2, cols 0-5 should be blank (inclusive of cursor)
+        for col in 0..=5u32 {
+            assert_eq!(s.grid.visible_line(2).unwrap().get_cell(col).ch[0], b' ');
+        }
+        // Row 2, cols 6-9 should still have 'X'
+        for col in 6..10u32 {
+            assert_eq!(s.grid.visible_line(2).unwrap().get_cell(col).ch[0], b'X');
+        }
+        // Rows 3-4 should be untouched
+        for row in 3..5u32 {
+            assert_eq!(s.grid.visible_line(row).unwrap().get_cell(0).ch[0], b'X');
+        }
+    }
+
+    #[test]
+    fn test_erase_chars_blanks_without_shifting() {
+        let mut s = Screen::new(10, 5);
+        for (i, ch) in b"ABCDEFGHIJ".iter().enumerate() {
+            s.cursor_to(0, i as u32);
+            s.put_char(&[*ch, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        // Place cursor at col 3, erase 3 chars
+        s.cursor_to(0, 3);
+        s.erase_chars(3);
+
+        let line = s.grid.visible_line(0).unwrap();
+        // Cols 0-2 untouched
+        assert_eq!(line.get_cell(0).ch[0], b'A');
+        assert_eq!(line.get_cell(1).ch[0], b'B');
+        assert_eq!(line.get_cell(2).ch[0], b'C');
+        // Cols 3-5 blanked
+        assert_eq!(line.get_cell(3).ch[0], b' ');
+        assert_eq!(line.get_cell(4).ch[0], b' ');
+        assert_eq!(line.get_cell(5).ch[0], b' ');
+        // Cols 6-9 untouched (no shifting)
+        assert_eq!(line.get_cell(6).ch[0], b'G');
+        assert_eq!(line.get_cell(7).ch[0], b'H');
+        assert_eq!(line.get_cell(8).ch[0], b'I');
+        assert_eq!(line.get_cell(9).ch[0], b'J');
+    }
+
+    #[test]
+    fn test_reverse_index_scrolls_down_at_top() {
+        let mut s = Screen::new(10, 5);
+        // Put chars on rows 0-4
+        for row in 0..5u32 {
+            s.cursor_to(row, 0);
+            s.put_char(&[b'A' + row as u8, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        // Cursor at row 0 — reverse_index should scroll down
+        s.cursor_to(0, 0);
+        s.reverse_index();
+
+        // Row 0 should be blank (new line inserted)
+        assert_eq!(s.grid.visible_line(0).unwrap().get_cell(0).ch[0], b' ');
+        // Row 1 should have what was on row 0 ('A')
+        assert_eq!(s.grid.visible_line(1).unwrap().get_cell(0).ch[0], b'A');
+        // Cursor should still be at row 0
+        assert_eq!(s.cy, 0);
+    }
+
+    #[test]
+    fn test_reverse_index_cursor_up_when_not_at_top() {
+        let mut s = Screen::new(10, 5);
+        s.cursor_to(3, 0);
+        s.reverse_index();
+        assert_eq!(s.cy, 2);
+    }
+
+    #[test]
+    fn test_clear_all_resets_everything() {
+        let mut s = Screen::new(10, 5);
+        // Write some content, move cursor, set pending wrap
+        for c in b"ABCDEFGHIJ" {
+            s.put_char(&[*c, 0, 0, 0, 0, 0, 0, 0], 1, 1);
+        }
+        s.cursor_to(3, 5);
+        s.cell.fg = Color::Palette(1);
+        s.set_scroll_region(1, 3);
+
+        s.clear_all();
+
+        assert_eq!(s.cx, 0);
+        assert_eq!(s.cy, 0);
+        assert_eq!(s.rupper, 0);
+        assert_eq!(s.rlower, 4);
+        assert!(!s.pending_wrap);
+        assert!(matches!(s.cell.fg, Color::Default));
+
+        // All visible cells should be blank
+        for row in 0..5u32 {
+            for col in 0..10u32 {
+                assert_eq!(s.grid.visible_line(row).unwrap().get_cell(col).ch[0], b' ');
+            }
+        }
+    }
 }
