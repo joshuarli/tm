@@ -411,9 +411,6 @@ pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
             if changed {
                 pane.screen.resize(geo.sx, geo.sy);
                 pane.alt_screen.resize(geo.sx, geo.sy);
-                // Clear the pane's screen and reset cursor so the shell
-                // redraws cleanly at the new size
-                pane.active_screen_mut().clear_all();
                 let _ = crate::sys::set_winsize(pane.pty_master, geo.sx, geo.sy);
                 unsafe { libc::killpg(pane.pid, libc::SIGWINCH); }
             }

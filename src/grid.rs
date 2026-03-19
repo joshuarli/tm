@@ -434,24 +434,99 @@ impl Grid {
         }
     }
 
-    /// Resize the grid to new dimensions.
+    /// Resize the grid to new dimensions with reflow.
+    /// Lines marked WRAPPED are joined and re-split at the new width.
     pub(crate) fn resize(&mut self, new_sx: u32, new_sy: u32) {
-        // Resize existing lines to new width
-        for line in &mut self.lines {
-            line.resize(new_sx);
+        if new_sx != self.sx && new_sx > 0 {
+            self.reflow(new_sx);
+        } else {
+            // Just ensure lines are wide enough
+            for line in &mut self.lines {
+                line.resize(new_sx);
+            }
         }
         self.sx = new_sx;
 
         // Adjust number of visible lines
         let total = self.lines.len() as u32;
         if new_sy > total {
-            // Need more lines
             for _ in 0..(new_sy - total) {
                 self.lines.push_back(GridLine::new(new_sx));
             }
         }
-        // If new_sy < old sy, history grows (lines become history). That's fine.
         self.sy = new_sy;
+    }
+
+    /// Reflow all lines to a new width.
+    /// Consecutive WRAPPED lines are joined into a logical line,
+    /// then re-split at the new width.
+    fn reflow(&mut self, new_sx: u32) {
+        let old_lines: Vec<GridLine> = std::mem::take(&mut self.lines).into();
+        let mut new_lines = VecDeque::new();
+
+        let mut i = 0;
+        while i < old_lines.len() {
+            // Collect a logical line: a sequence of WRAPPED lines + one final line
+            let mut cells: Vec<CellContent> = Vec::new();
+
+            loop {
+                let line = &old_lines[i];
+                // Read resolved cells, trimming trailing spaces from each physical line
+                let mut line_cells: Vec<CellContent> = (0..line.compact.len() as u32)
+                    .map(|col| line.get_cell(col))
+                    .collect();
+
+                // Only trim trailing spaces from the last segment of a wrapped group
+                let wrapped = line.flags.has(LineFlags::WRAPPED);
+                if !wrapped {
+                    while line_cells.last().map_or(false, |c| c.ch_len == 1 && c.ch[0] == b' ' && c.attr.0 == 0 && matches!(c.fg, Color::Default) && matches!(c.bg, Color::Default)) {
+                        line_cells.pop();
+                    }
+                }
+
+                cells.extend_from_slice(&line_cells);
+                i += 1;
+                if !wrapped || i >= old_lines.len() {
+                    break;
+                }
+            }
+
+            // Trim trailing spaces from the full logical line
+            while cells.last().map_or(false, |c| c.ch_len == 1 && c.ch[0] == b' ' && c.attr.0 == 0 && matches!(c.fg, Color::Default) && matches!(c.bg, Color::Default)) {
+                cells.pop();
+            }
+
+            // Split the logical line at new_sx
+            if cells.is_empty() {
+                let mut line = GridLine::new(new_sx);
+                line.mark_dirty();
+                new_lines.push_back(line);
+            } else {
+                let nchunks = (cells.len() + new_sx as usize - 1) / new_sx as usize;
+                for ci in 0..nchunks {
+                    let start = ci * new_sx as usize;
+                    let end = (start + new_sx as usize).min(cells.len());
+                    let mut line = GridLine::new(new_sx);
+                    for (j, cell) in cells[start..end].iter().enumerate() {
+                        line.set_cell(j as u32, cell);
+                    }
+                    line.flags = if ci < nchunks - 1 {
+                        LineFlags(LineFlags::WRAPPED)
+                    } else {
+                        LineFlags::default()
+                    };
+                    line.mark_dirty();
+                    new_lines.push_back(line);
+                }
+            }
+        }
+
+        self.lines = new_lines;
+
+        // Trim excess history
+        while self.lines.len() > (self.sy + self.hlimit) as usize {
+            self.lines.pop_front();
+        }
     }
 
     /// Clear all content.
@@ -580,5 +655,87 @@ mod tests {
         // Data at column 60 should still be there
         let cell = grid.visible_line(0).unwrap().get_cell(60);
         assert_eq!(cell.ch[0], b'X');
+    }
+
+    #[test]
+    fn test_reflow_wrap() {
+        // Write 10 chars on a 10-col grid, shrink to 5 — should wrap into 2 lines
+        let mut grid = Grid::new(10, 5, 100);
+        for i in 0..10u8 {
+            let content = CellContent::from_ascii(b'A' + i);
+            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+        }
+        grid.visible_line_mut(0).unwrap().flags = LineFlags(LineFlags::WRAPPED);
+
+        for i in 0..5u8 {
+            let content = CellContent::from_ascii(b'a' + i);
+            grid.visible_line_mut(1).unwrap().set_cell(i as u32, &content);
+        }
+
+        // Shrink to 5 cols — "ABCDEFGHIJabcde" becomes 3 lines
+        grid.resize(5, 5);
+
+        // Use absolute lines (reflow may shift content into history)
+        // Find where 'A' starts
+        let mut found = None;
+        for idx in 0..grid.lines.len() {
+            let cell = grid.lines[idx].get_cell(0);
+            if cell.ch[0] == b'A' {
+                found = Some(idx);
+                break;
+            }
+        }
+        let start = found.expect("should find 'A'");
+
+        let row0 = &grid.lines[start];
+        assert_eq!(row0.get_cell(0).ch[0], b'A');
+        assert_eq!(row0.get_cell(4).ch[0], b'E');
+        assert!(row0.flags.has(LineFlags::WRAPPED));
+
+        let row1 = &grid.lines[start + 1];
+        assert_eq!(row1.get_cell(0).ch[0], b'F');
+        assert_eq!(row1.get_cell(4).ch[0], b'J');
+        assert!(row1.flags.has(LineFlags::WRAPPED));
+
+        let row2 = &grid.lines[start + 2];
+        assert_eq!(row2.get_cell(0).ch[0], b'a');
+        assert_eq!(row2.get_cell(4).ch[0], b'e');
+        assert!(!row2.flags.has(LineFlags::WRAPPED));
+    }
+
+    #[test]
+    fn test_reflow_unwrap() {
+        // 2 wrapped lines of 5 cols each, expand to 10 — should merge into 1 line
+        let mut grid = Grid::new(5, 5, 100);
+        for i in 0..5u8 {
+            let content = CellContent::from_ascii(b'A' + i);
+            grid.visible_line_mut(0).unwrap().set_cell(i as u32, &content);
+        }
+        grid.visible_line_mut(0).unwrap().flags = LineFlags(LineFlags::WRAPPED);
+
+        for i in 0..5u8 {
+            let content = CellContent::from_ascii(b'F' + i);
+            grid.visible_line_mut(1).unwrap().set_cell(i as u32, &content);
+        }
+
+        grid.resize(10, 5);
+
+        // Find where 'A' starts
+        let mut found = None;
+        for idx in 0..grid.lines.len() {
+            let cell = grid.lines[idx].get_cell(0);
+            if cell.ch[0] == b'A' {
+                found = Some(idx);
+                break;
+            }
+        }
+        let start = found.expect("should find 'A'");
+
+        let row0 = &grid.lines[start];
+        assert_eq!(row0.get_cell(0).ch[0], b'A');
+        assert_eq!(row0.get_cell(4).ch[0], b'E');
+        assert_eq!(row0.get_cell(5).ch[0], b'F');
+        assert_eq!(row0.get_cell(9).ch[0], b'J');
+        assert!(!row0.flags.has(LineFlags::WRAPPED));
     }
 }

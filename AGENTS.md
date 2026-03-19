@@ -119,7 +119,5 @@ Tests live in `#[cfg(test)] mod tests` blocks within each module. Key coverage:
 
 ## What's Not Done Yet
 
-- **Copy mode**: Scaffolded but not functional (mouse scroll, selection, OSC 52 clipboard)
-- **Grid reflow on resize**: Lines don't rewrap using WRAPPED flags
-- **Pane focus with mouse click**: Partially implemented
+- **Scroll coalescing**: Accumulate wheel deltas over 16ms timer (currently processes each event immediately)
 - **Integration tests**: No PTY-based end-to-end tests yet
