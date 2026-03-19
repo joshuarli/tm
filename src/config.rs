@@ -8,6 +8,7 @@ pub struct Config {
     pub base_index: u32,
     pub renumber_windows: bool,
     pub focus_events: bool,
+    pub extended_keys: bool,
     pub status_position: StatusPosition,
     pub status_bg: crate::grid::Color,
     pub status_fg: crate::grid::Color,
@@ -65,6 +66,7 @@ impl Config {
             base_index: 1,
             renumber_windows: true,
             focus_events: true,
+            extended_keys: true,
             status_position: StatusPosition::Bottom,
             status_bg: crate::grid::Color::Default,
             status_fg: crate::grid::Color::Default,
@@ -199,6 +201,7 @@ fn parse_set(key: &str, value: &str, config: &mut Config) {
         }
         "renumber-windows" => config.renumber_windows = value == "on",
         "focus-events" => config.focus_events = value == "on",
+        "extended-keys" => config.extended_keys = value == "on",
         "status-position" => {
             config.status_position = if value == "top" {
                 StatusPosition::Top

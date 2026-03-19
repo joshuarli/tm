@@ -730,8 +730,18 @@ impl VtParser {
                 }
             }
             b'm' => {
-                // SGR — select graphic rendition
-                self.sgr(pane);
+                if is_gt && p0(0) == 4 {
+                    // CSI > 4 ; N m — modifyOtherKeys
+                    let level = p0(1);
+                    if level >= 2 {
+                        pane.screen_mut().mode.set(ScreenMode::EXTENDED_KEYS);
+                    } else {
+                        pane.screen_mut().mode.clear(ScreenMode::EXTENDED_KEYS);
+                    }
+                } else {
+                    // SGR — select graphic rendition
+                    self.sgr(pane);
+                }
             }
             b'n' => {
                 // DSR — device status report
@@ -936,6 +946,14 @@ impl VtParser {
                         pane.screen_mut().mode.set(ScreenMode::SYNCED_OUTPUT);
                     } else {
                         pane.screen_mut().mode.clear(ScreenMode::SYNCED_OUTPUT);
+                    }
+                }
+                2027 => {
+                    // modifyOtherKeys / extended keys
+                    if enable {
+                        pane.screen_mut().mode.set(ScreenMode::EXTENDED_KEYS);
+                    } else {
+                        pane.screen_mut().mode.clear(ScreenMode::EXTENDED_KEYS);
                     }
                 }
                 _ => {

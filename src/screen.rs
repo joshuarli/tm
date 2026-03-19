@@ -16,6 +16,7 @@ impl ScreenMode {
     pub const FOCUS_EVENTS: u32 = 0x100;
     pub const ALT_SCREEN: u32 = 0x200;
     pub const SYNCED_OUTPUT: u32 = 0x400;
+    pub const EXTENDED_KEYS: u32 = 0x800;
 
     pub fn has(self, flag: u32) -> bool {
         self.0 & flag != 0

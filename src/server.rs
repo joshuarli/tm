@@ -466,6 +466,9 @@ fn handle_identify(
     if config.focus_events {
         tty.enable_focus();
     }
+    if config.extended_keys {
+        tty.enable_extended_keys();
+    }
     tty.enable_bracketed_paste();
     tty.cursor_hide();
     tty.clear_screen();
@@ -564,6 +567,9 @@ fn handle_attach(
     tty.enable_mouse();
     if config.focus_events {
         tty.enable_focus();
+    }
+    if config.extended_keys {
+        tty.enable_extended_keys();
     }
     tty.enable_bracketed_paste();
     tty.cursor_hide();
@@ -667,6 +673,7 @@ fn apply_result(
                 let mut tty = TtyWriter::new();
                 tty.disable_mouse();
                 tty.disable_focus();
+                tty.disable_extended_keys();
                 tty.disable_bracketed_paste();
                 tty.leave_alt_screen();
                 tty.cursor_show();
@@ -925,6 +932,7 @@ fn cleanup_client(
         let mut tty = TtyWriter::new();
         tty.disable_mouse();
         tty.disable_focus();
+        tty.disable_extended_keys();
         tty.disable_bracketed_paste();
         tty.leave_alt_screen();
         tty.cursor_show();
@@ -976,6 +984,7 @@ fn cleanup(state: &State, socket_path: &std::path::Path) {
         let mut tty = TtyWriter::new();
         tty.disable_mouse();
         tty.disable_focus();
+        tty.disable_extended_keys();
         tty.disable_bracketed_paste();
         tty.leave_alt_screen();
         tty.cursor_show();

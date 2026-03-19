@@ -278,6 +278,16 @@ impl TtyWriter {
         self.write_raw(b"\x1b[?2026l");
     }
 
+    /// Enable extended keys (modifyOtherKeys level 2) on the outer terminal.
+    pub fn enable_extended_keys(&mut self) {
+        self.write_raw(b"\x1b[>4;2m");
+    }
+
+    /// Disable extended keys on the outer terminal.
+    pub fn disable_extended_keys(&mut self) {
+        self.write_raw(b"\x1b[>4;0m");
+    }
+
     /// Enable bracketed paste.
     pub fn enable_bracketed_paste(&mut self) {
         self.write_raw(b"\x1b[?2004h");

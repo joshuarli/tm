@@ -328,6 +328,12 @@ fn parse_csi_key(buf: &[u8]) -> Option<(KeyCode, usize)> {
                 if has_digit {
                     params.push(current);
                 }
+                // modifyOtherKeys format: CSI 27 ; <mod> ; <codepoint> ~
+                if params.first().copied() == Some(27) && params.len() >= 3 {
+                    let modifiers = xterm_modifiers(params[1]);
+                    let cp = params[2];
+                    return Some((KeyCode(cp | modifiers), i + 1));
+                }
                 let key = match params.first().copied().unwrap_or(0) {
                     1 => KeyCode::HOME,
                     2 => KeyCode::INSERT,
@@ -351,6 +357,12 @@ fn parse_csi_key(buf: &[u8]) -> Option<(KeyCode, usize)> {
             b'A'..=b'Z' | b'a'..=b'z' => {
                 if has_digit {
                     params.push(current);
+                }
+                // CSI u format: ESC [ <codepoint> ; <modifier> u
+                if buf[i] == b'u' {
+                    let cp = params.first().copied().unwrap_or(0);
+                    let modifiers = xterm_modifiers(params.get(1).copied().unwrap_or(0));
+                    return Some((KeyCode(cp | modifiers), i + 1));
                 }
                 let key = match buf[i] {
                     b'A' => KeyCode::UP,
@@ -564,6 +576,68 @@ mod tests {
             InputEvent::Key(k) => {
                 assert_eq!(k.base(), KeyCode::ENTER);
                 assert!(!k.has_ctrl(), "Enter should not have CTRL flag");
+            }
+            _ => panic!("expected key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_csi_u() {
+        // CSI u: ESC [ 97 ; 5 u = Ctrl+A
+        let (events, consumed) = parse_input(b"\x1b[97;5u");
+        assert_eq!(consumed, 7);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Key(k) => {
+                assert_eq!(k.base(), b'a' as u32);
+                assert!(k.has_ctrl());
+                assert!(!k.has_meta());
+            }
+            _ => panic!("expected key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_csi_u_shift_alt() {
+        // CSI u: ESC [ 65 ; 4 u = Alt+Shift+A
+        let (events, consumed) = parse_input(b"\x1b[65;4u");
+        assert_eq!(consumed, 7);
+        match &events[0] {
+            InputEvent::Key(k) => {
+                assert_eq!(k.base(), b'A' as u32);
+                assert!(k.has_shift());
+                assert!(k.has_meta());
+                assert!(!k.has_ctrl());
+            }
+            _ => panic!("expected key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_csi_u_no_modifiers() {
+        // CSI u with no modifier param: ESC [ 97 u = plain 'a'
+        let (events, consumed) = parse_input(b"\x1b[97u");
+        assert_eq!(consumed, 5);
+        match &events[0] {
+            InputEvent::Key(k) => {
+                assert_eq!(k.base(), b'a' as u32);
+                assert!(!k.has_ctrl());
+                assert!(!k.has_meta());
+                assert!(!k.has_shift());
+            }
+            _ => panic!("expected key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_modify_other_keys() {
+        // modifyOtherKeys format: ESC [ 27 ; 5 ; 105 ~ = Ctrl+I
+        let (events, consumed) = parse_input(b"\x1b[27;5;105~");
+        assert_eq!(consumed, 11);
+        match &events[0] {
+            InputEvent::Key(k) => {
+                assert_eq!(k.base(), b'i' as u32);
+                assert!(k.has_ctrl());
             }
             _ => panic!("expected key"),
         }

@@ -1323,12 +1323,31 @@ fn key_to_bytes(key: KeyCode, state: &State, cid: ClientId) -> Vec<u8> {
     let base = key.base();
     let ctrl = key.has_ctrl();
     let meta = key.has_meta();
+    let shift = key.has_shift();
+
+    let pane = state
+        .active_pane_for_client(cid)
+        .and_then(|pid| state.panes.get(&pid));
 
     // Check if application cursor key mode is active
-    let app_cursor = state
-        .active_pane_for_client(cid)
-        .and_then(|pid| state.panes.get(&pid))
-        .is_some_and(|p| p.active_screen().mode.has(0x1000));
+    let app_cursor = pane.is_some_and(|p| p.active_screen().mode.has(0x1000));
+
+    // Check if the pane wants extended keys (CSI u encoding)
+    let extended = pane.is_some_and(|p| {
+        p.active_screen()
+            .mode
+            .has(crate::screen::ScreenMode::EXTENDED_KEYS)
+    });
+
+    // CSI u path: encode regular keys with modifiers as ESC [ <cp> ; <mod> u
+    if extended && (ctrl || meta || shift) && base < 0x110000 {
+        let mod_param =
+            1 + if shift { 1 } else { 0 } + if meta { 2 } else { 0 } + if ctrl { 4 } else { 0 };
+        use std::io::Write;
+        let mut buf = Vec::new();
+        let _ = write!(buf, "\x1b[{base};{mod_param}u");
+        return buf;
+    }
 
     let arrow_prefix = if app_cursor { b"\x1bO" } else { b"\x1b[" };
 
@@ -1391,7 +1410,7 @@ fn key_to_bytes(key: KeyCode, state: &State, cid: ClientId) -> Vec<u8> {
         KeyCode::F12 => buf.extend_from_slice(b"\x1b[24~"),
         KeyCode::ENTER => buf.push(0x0D),
         KeyCode::TAB => {
-            if key.has_shift() {
+            if shift {
                 buf.extend_from_slice(b"\x1b[Z");
             } else {
                 buf.push(0x09);
@@ -2289,5 +2308,59 @@ mod tests {
             key_to_bytes(KeyCode(KeyCode::F12), &state, cid),
             b"\x1b[24~"
         );
+    }
+
+    #[test]
+    fn key_to_bytes_csi_u_ctrl_a() {
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+        // Enable extended keys on the pane
+        state
+            .panes
+            .get_mut(&pid)
+            .unwrap()
+            .active_screen_mut()
+            .mode
+            .set(crate::screen::ScreenMode::EXTENDED_KEYS);
+        let bytes = key_to_bytes(KeyCode::ctrl('a'), &state, cid);
+        assert_eq!(bytes, b"\x1b[97;5u");
+    }
+
+    #[test]
+    fn key_to_bytes_csi_u_alt_shift() {
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+        state
+            .panes
+            .get_mut(&pid)
+            .unwrap()
+            .active_screen_mut()
+            .mode
+            .set(crate::screen::ScreenMode::EXTENDED_KEYS);
+        // Alt+Shift+A = base 'A'(65) | SHIFT | META
+        let key = KeyCode(b'A' as u32 | KeyCode::SHIFT | KeyCode::META);
+        let bytes = key_to_bytes(key, &state, cid);
+        assert_eq!(bytes, b"\x1b[65;4u");
+    }
+
+    #[test]
+    fn key_to_bytes_legacy_without_extended_keys() {
+        // Without extended keys, Ctrl+A should use legacy C0 encoding
+        let (state, _config, cid, _pid, _wid, _sid) = setup();
+        let bytes = key_to_bytes(KeyCode::ctrl('a'), &state, cid);
+        assert_eq!(bytes, vec![0x01]);
+    }
+
+    #[test]
+    fn key_to_bytes_arrows_stay_legacy_with_extended_keys() {
+        // Arrow keys should use legacy encoding even with extended keys
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+        state
+            .panes
+            .get_mut(&pid)
+            .unwrap()
+            .active_screen_mut()
+            .mode
+            .set(crate::screen::ScreenMode::EXTENDED_KEYS);
+        let bytes = key_to_bytes(KeyCode(KeyCode::UP), &state, cid);
+        assert_eq!(bytes, b"\x1b[A");
     }
 }
