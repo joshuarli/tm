@@ -236,8 +236,22 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
         }
 
         // Handle dead panes
-        for pid in &dead_panes {
-            handle_pane_death(&mut state, &mut poll, &mut pane_tokens, *pid);
+        if !dead_panes.is_empty() {
+            for pid in &dead_panes {
+                handle_pane_death(&mut state, &mut poll, &mut pane_tokens, *pid);
+            }
+            // Full clear + redraw — panes resize to fill the dead pane's space
+            for pane in state.panes.values_mut() {
+                pane.active_screen_mut().grid.mark_all_dirty();
+                pane.flags |= crate::state::PaneFlags::REDRAW;
+            }
+            for client in state.clients.values() {
+                if client.session.0 != u32::MAX {
+                    let mut w = TtyWriter::new();
+                    w.clear_screen();
+                    w.flush_to(client.tty_fd).ok();
+                }
+            }
             force_render = true;
         }
 

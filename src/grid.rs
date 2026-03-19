@@ -277,14 +277,13 @@ impl GridLine {
         }
     }
 
-    /// Resize this line to a new width. Preserves existing content, pads with spaces.
+    /// Resize this line to a new width. Only grows — never truncates existing
+    /// content, so data is preserved when a pane shrinks then expands.
     pub(crate) fn resize(&mut self, new_width: u32) {
         let new_width = new_width as usize;
         if new_width > self.compact.len() {
             self.compact
                 .resize(new_width, CompactCell::default());
-        } else {
-            self.compact.truncate(new_width);
         }
         // Mark the whole line dirty after resize
         self.mark_dirty();
@@ -562,9 +561,24 @@ mod tests {
         grid.resize(40, 12);
         assert_eq!(grid.sx, 40);
         assert_eq!(grid.sy, 12);
-        // All lines should be resized
+        // Existing lines keep their data (>= new width), never truncated
         for line in &grid.lines {
-            assert_eq!(line.compact.len(), 40);
+            assert!(line.compact.len() >= 40);
         }
+    }
+
+    #[test]
+    fn test_grid_resize_preserves_data() {
+        let mut grid = Grid::new(80, 5, 1000);
+        // Write to column 60
+        let content = CellContent::from_ascii(b'X');
+        grid.visible_line_mut(0).unwrap().set_cell(60, &content);
+        // Shrink to 40 cols
+        grid.resize(40, 5);
+        // Expand back to 80
+        grid.resize(80, 5);
+        // Data at column 60 should still be there
+        let cell = grid.visible_line(0).unwrap().get_cell(60);
+        assert_eq!(cell.ch[0], b'X');
     }
 }
