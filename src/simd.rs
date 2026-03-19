@@ -92,8 +92,91 @@ impl SimdScanner {
         (zero_mask.trailing_zeros() / 4) as usize
     }
 
-    /// Scalar fallback for non-aarch64.
-    #[cfg(not(target_arch = "aarch64"))]
+    /// SSE2 implementation for x86_64 (SSE2 is baseline — always available).
+    /// Uses the unsigned range trick: (byte - 0x20) as u8 < 0x5F means 0x20..=0x7E.
+    #[cfg(target_arch = "x86_64")]
+    pub fn scan(buf: &[u8]) -> usize {
+        use core::arch::x86_64::*;
+
+        let len = buf.len();
+        let mut pos = 0;
+
+        // SAFETY: SSE2 is guaranteed on x86_64. All loads are guarded by bounds checks.
+        unsafe {
+            // Unsigned compare trick: (byte - 0x20) < 0x5F iff byte in [0x20, 0x7E]
+            // SSE2 has no unsigned cmplt, so use: xor with 0x80 converts to signed range
+            let bias = _mm_set1_epi8(0x20u8 as i8);
+            let flip = _mm_set1_epi8(-128i8); // 0x80
+            let lim = _mm_set1_epi8((0x5F ^ 0x80) as i8);
+
+            // 64 bytes at a time (4 × 16 unrolled)
+            while pos + 64 <= len {
+                let ptr = buf.as_ptr().add(pos);
+                let ok0 = Self::is_printable_sse2(_mm_loadu_si128(ptr as *const __m128i), bias, flip, lim);
+                let ok1 = Self::is_printable_sse2(_mm_loadu_si128(ptr.add(16) as *const __m128i), bias, flip, lim);
+                let ok2 = Self::is_printable_sse2(_mm_loadu_si128(ptr.add(32) as *const __m128i), bias, flip, lim);
+                let ok3 = Self::is_printable_sse2(_mm_loadu_si128(ptr.add(48) as *const __m128i), bias, flip, lim);
+
+                let all = _mm_and_si128(_mm_and_si128(ok0, ok1), _mm_and_si128(ok2, ok3));
+                if _mm_movemask_epi8(all) == 0xFFFF {
+                    pos += 64;
+                    continue;
+                }
+
+                let m0 = _mm_movemask_epi8(ok0) as u32;
+                if m0 != 0xFFFF { return pos + (!m0 & 0xFFFF).trailing_zeros() as usize; }
+                pos += 16;
+                let m1 = _mm_movemask_epi8(ok1) as u32;
+                if m1 != 0xFFFF { return pos + (!m1 & 0xFFFF).trailing_zeros() as usize; }
+                pos += 16;
+                let m2 = _mm_movemask_epi8(ok2) as u32;
+                if m2 != 0xFFFF { return pos + (!m2 & 0xFFFF).trailing_zeros() as usize; }
+                pos += 16;
+                let m3 = _mm_movemask_epi8(ok3) as u32;
+                return pos + (!m3 & 0xFFFF).trailing_zeros() as usize;
+            }
+
+            // 16-byte tail
+            while pos + 16 <= len {
+                let ok = Self::is_printable_sse2(
+                    _mm_loadu_si128(buf.as_ptr().add(pos) as *const __m128i),
+                    bias, flip, lim,
+                );
+                let m = _mm_movemask_epi8(ok) as u32;
+                if m == 0xFFFF {
+                    pos += 16;
+                } else {
+                    return pos + (!m & 0xFFFF).trailing_zeros() as usize;
+                }
+            }
+        }
+
+        // Scalar tail
+        while pos < len {
+            let b = buf[pos];
+            if b < 0x20 || b >= 0x7F { return pos; }
+            pos += 1;
+        }
+        pos
+    }
+
+    /// Check 16 bytes for printable ASCII. Returns mask with 0xFF for printable, 0x00 otherwise.
+    #[cfg(target_arch = "x86_64")]
+    #[inline(always)]
+    unsafe fn is_printable_sse2(
+        v: core::arch::x86_64::__m128i,
+        bias: core::arch::x86_64::__m128i,
+        flip: core::arch::x86_64::__m128i,
+        lim: core::arch::x86_64::__m128i,
+    ) -> core::arch::x86_64::__m128i {
+        use core::arch::x86_64::*;
+        // (v - 0x20) as unsigned < 0x5F → printable ASCII [0x20, 0x7E]
+        let biased = _mm_sub_epi8(v, bias);
+        _mm_cmplt_epi8(_mm_xor_si128(biased, flip), lim)
+    }
+
+    /// Scalar fallback for architectures without SIMD support.
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
     pub fn scan(buf: &[u8]) -> usize {
         let mut pos = 0;
         while pos < buf.len() {
