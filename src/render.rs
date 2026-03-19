@@ -137,14 +137,40 @@ fn render_borders(
         return;
     }
 
-    // Simple approach: draw borders between panes using box-drawing chars.
-    // We'll build a grid of border characters.
     let active_pid = window.active_pane;
 
-    // Set border style
-    let border_attr = CellContent::default();
-    tty.reset_attrs();
-    tty.set_cell_attrs(&border_attr);
+    // Find the active pane geometry
+    let active_geo = geos.iter().find(|g| g.id == active_pid);
+
+    // For each border cell, check if it's adjacent to the active pane
+    let is_active_border = |x: u32, y: u32| -> bool {
+        let Some(ag) = active_geo else {
+            return false;
+        };
+        // Cell is on the active pane's right edge
+        if x == ag.xoff + ag.sx && y >= ag.yoff && y < ag.yoff + ag.sy {
+            return true;
+        }
+        // Cell is on the active pane's left edge
+        if x + 1 == ag.xoff && y >= ag.yoff && y < ag.yoff + ag.sy {
+            return true;
+        }
+        // Cell is on the active pane's bottom edge
+        if y == ag.yoff + ag.sy && x >= ag.xoff && x < ag.xoff + ag.sx {
+            return true;
+        }
+        // Cell is on the active pane's top edge
+        if y + 1 == ag.yoff && x >= ag.xoff && x < ag.xoff + ag.sx {
+            return true;
+        }
+        false
+    };
+
+    let dim_border = CellContent::default();
+    let green_border = CellContent {
+        fg: Color::Palette(2),
+        ..CellContent::default()
+    };
 
     for geo in geos {
         // Right border (vertical line)
@@ -153,15 +179,11 @@ fn render_borders(
             for row in geo.yoff..geo.yoff + geo.sy {
                 if row < sy {
                     tty.cursor_goto(row, right_x);
-                    // Active pane gets a brighter border
-                    if geo.id == active_pid {
-                        tty.set_cell_attrs(&CellContent {
-                            fg: Color::Palette(2), // green
-                            ..CellContent::default()
-                        });
+                    tty.set_cell_attrs(if is_active_border(right_x, row) {
+                        &green_border
                     } else {
-                        tty.set_cell_attrs(&border_attr);
-                    }
+                        &dim_border
+                    });
                     tty.write_str("\u{2502}"); // │
                 }
             }
@@ -170,21 +192,23 @@ fn render_borders(
         // Bottom border (horizontal line)
         let bottom_y = geo.yoff + geo.sy;
         if bottom_y < sy {
-            tty.cursor_goto(bottom_y, geo.xoff);
-            if geo.id == active_pid {
-                tty.set_cell_attrs(&CellContent {
-                    fg: Color::Palette(2),
-                    ..CellContent::default()
+            for col in geo.xoff..geo.xoff + geo.sx {
+                tty.cursor_goto(bottom_y, col);
+                tty.set_cell_attrs(if is_active_border(col, bottom_y) {
+                    &green_border
+                } else {
+                    &dim_border
                 });
-            } else {
-                tty.set_cell_attrs(&border_attr);
-            }
-            for _ in 0..geo.sx {
                 tty.write_str("\u{2500}"); // ─
             }
-            // Corner if there's also a right border
+            // Corner/intersection
             if geo.xoff + geo.sx < sx {
                 tty.cursor_goto(bottom_y, geo.xoff + geo.sx);
+                tty.set_cell_attrs(if is_active_border(geo.xoff + geo.sx, bottom_y) {
+                    &green_border
+                } else {
+                    &dim_border
+                });
                 tty.write_str("\u{253C}"); // ┼
             }
         }
