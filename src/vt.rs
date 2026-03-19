@@ -65,8 +65,39 @@ impl VtParser {
     /// Returns actions that need to be forwarded to the client.
     pub fn feed(&mut self, pane: &mut PaneScreenAccess, data: &[u8]) -> Vec<VtAction> {
         let mut actions = Vec::new();
-        for &byte in data {
-            self.process_byte(pane, byte, &mut actions);
+        let mut i = 0;
+        while i < data.len() {
+            // Fast path: batch printable ASCII in Ground state when the
+            // current cell style fits in a CompactCell (no RGB, no insert mode)
+            if self.state == VtState::Ground
+                && self.utf8_need == 0
+            {
+                let screen = pane.screen_mut();
+                let can_fast = !screen.mode.has(crate::screen::ScreenMode::INSERT)
+                    && screen.cell.attr.fits_compact()
+                    && matches!(screen.cell.fg, crate::grid::Color::Default | crate::grid::Color::Palette(_))
+                    && matches!(screen.cell.bg, crate::grid::Color::Default | crate::grid::Color::Palette(_))
+                    && matches!(screen.cell.us, crate::grid::Color::Default);
+                if can_fast {
+                    let start = i;
+                    while i < data.len() {
+                        let b = data[i];
+                        if b >= 0x20 && b <= 0x7E {
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    if i > start {
+                        for &byte in &data[start..i] {
+                            screen.put_ascii(byte);
+                        }
+                        continue;
+                    }
+                }
+            }
+            self.process_byte(pane, data[i], &mut actions);
+            i += 1;
         }
         actions
     }

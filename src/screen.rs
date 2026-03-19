@@ -140,6 +140,51 @@ impl Screen {
         }
     }
 
+    /// Fast path for printable ASCII with current cell style.
+    /// Skips UTF-8, insert mode, extended cell checks.
+    #[inline]
+    pub fn put_ascii(&mut self, byte: u8) {
+        let sx = self.sx();
+
+        if self.pending_wrap {
+            self.pending_wrap = false;
+            if self.mode.has(ScreenMode::WRAP) {
+                if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                    line.flags.0 |= crate::grid::LineFlags::WRAPPED;
+                }
+                self.carriage_return();
+                self.linefeed();
+            }
+        }
+
+        // Write directly to CompactCell — no CellContent intermediary
+        if let Some(line) = self.grid.visible_line_mut(self.cy) {
+            let col = self.cx as usize;
+            if col < line.compact.len() {
+                let c = &mut line.compact[col];
+                c.ch = byte;
+                c.attr = self.cell.attr.basic();
+                c.fg = match self.cell.fg {
+                    crate::grid::Color::Palette(p) => p,
+                    _ => 0,
+                };
+                c.bg = match self.cell.bg {
+                    crate::grid::Color::Palette(p) => p,
+                    _ => 0,
+                };
+                c.flags = crate::grid::CompactCell::DIRTY;
+            }
+        }
+
+        let new_cx = self.cx + 1;
+        if new_cx >= sx {
+            self.cx = sx - 1;
+            self.pending_wrap = true;
+        } else {
+            self.cx = new_cx;
+        }
+    }
+
     /// Insert blank cells at cursor, shifting existing cells right.
     pub fn insert_cells(&mut self, count: u32) {
         let sx = self.sx();
