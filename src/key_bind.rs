@@ -409,6 +409,17 @@ pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
             pane.sx = geo.sx;
             pane.sy = geo.sy;
             if changed {
+                // Clear the visible area so the shell's SIGWINCH redraw starts fresh.
+                // History is preserved (grid lines aren't truncated).
+                let screen = pane.active_screen_mut();
+                let sy = screen.sy();
+                let sx_new = geo.sx;
+                for row in 0..sy {
+                    if let Some(line) = screen.grid.visible_line_mut(row) {
+                        let blank = crate::grid::CellContent::default();
+                        line.clear_range(0, sx_new, &blank);
+                    }
+                }
                 pane.screen.resize(geo.sx, geo.sy);
                 pane.alt_screen.resize(geo.sx, geo.sy);
                 let _ = crate::sys::set_winsize(pane.pty_master, geo.sx, geo.sy);
