@@ -5,7 +5,7 @@ use tm::grid::{CellContent, Grid, GridLine, LineFlags};
 use tm::simd::SimdScanner;
 use tm::keys;
 use tm::screen::Screen;
-use tm::state::{Pane, PaneId};
+use tm::state::{Pane, PaneId, Selection};
 use tm::tty::TtyWriter;
 use tm::vt;
 
@@ -266,6 +266,253 @@ fn bench_tty_set_cell_attrs(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Slow path benchmarks
+// ---------------------------------------------------------------------------
+
+fn bench_vt_utf8_cjk(c: &mut Criterion) {
+    // CJK characters (3-byte UTF-8, width 2) — extended cell path
+    let mut data = Vec::new();
+    for _ in 0..500 {
+        data.extend_from_slice("中文".as_bytes()); // 3 bytes × 2 chars
+    }
+    c.bench_function("vt parse 500 CJK chars", |b| {
+        let mut pane = make_test_pane(80, 24);
+        b.iter(|| {
+            vt::process_pane_output(&mut pane, black_box(&data));
+        });
+    });
+}
+
+fn bench_vt_mixed_ascii_utf8(c: &mut Criterion) {
+    // Realistic mixed content: ASCII with occasional UTF-8
+    let mut data = Vec::new();
+    for i in 0..200 {
+        data.extend_from_slice(b"filename_");
+        if i % 5 == 0 {
+            data.extend_from_slice("→".as_bytes());
+        }
+        data.extend_from_slice(b".txt ");
+    }
+    c.bench_function("vt mixed ASCII+UTF8 (200 entries)", |b| {
+        let mut pane = make_test_pane(80, 24);
+        b.iter(|| {
+            vt::process_pane_output(&mut pane, black_box(&data));
+        });
+    });
+}
+
+fn bench_scroll_region(c: &mut Criterion) {
+    // Partial scroll — used by vim, less, htop for scrolling content areas
+    let mut grid = Grid::new(80, 24, 10_000);
+    c.bench_function("scroll_up region (rows 1-22)", |b| {
+        b.iter(|| grid.scroll_up(1, 22));
+    });
+}
+
+fn bench_scroll_down(c: &mut Criterion) {
+    let mut grid = Grid::new(80, 24, 10_000);
+    c.bench_function("scroll_down 80x24", |b| {
+        b.iter(|| grid.scroll_down(0, 23));
+    });
+}
+
+fn bench_vt_htop_frame(c: &mut Criterion) {
+    // Simulate htop: cursor position + colored text for each cell
+    let mut data = Vec::new();
+    for row in 1..=24 {
+        data.extend_from_slice(format!("\x1b[{row};1H").as_bytes());
+        for col in 0..80 {
+            let color = 31 + (col % 7);
+            data.extend_from_slice(format!("\x1b[{color}m").as_bytes());
+            data.push(b'0' + (col % 10) as u8);
+        }
+    }
+    data.extend_from_slice(b"\x1b[0m");
+    c.bench_function("vt htop-like frame (24 rows)", |b| {
+        let mut pane = make_test_pane(80, 24);
+        b.iter(|| {
+            vt::process_pane_output(&mut pane, black_box(&data));
+        });
+    });
+}
+
+fn bench_vt_htop_unchanged(c: &mut Criterion) {
+    // Second htop frame — same content, tests skip-if-unchanged
+    let mut data = Vec::new();
+    for row in 1..=24 {
+        data.extend_from_slice(format!("\x1b[{row};1H").as_bytes());
+        for col in 0..80 {
+            let color = 31 + (col % 7);
+            data.extend_from_slice(format!("\x1b[{color}m").as_bytes());
+            data.push(b'0' + (col % 10) as u8);
+        }
+    }
+    data.extend_from_slice(b"\x1b[0m");
+    let mut pane = make_test_pane(80, 24);
+    // Prime with first frame
+    vt::process_pane_output(&mut pane, &data);
+    // Clear dirty so we can measure
+    for row in 0..24 {
+        if let Some(line) = pane.screen.grid.visible_line_mut(row) {
+            for c in &mut line.compact {
+                c.clear_dirty();
+            }
+        }
+    }
+    c.bench_function("vt htop unchanged (skip-if-same)", |b| {
+        b.iter(|| {
+            vt::process_pane_output(&mut pane, black_box(&data));
+        });
+    });
+}
+
+fn bench_erase_large(c: &mut Criterion) {
+    let mut screen = Screen::new(200, 50);
+    c.bench_function("erase_display(2) 200x50", |b| {
+        b.iter(|| screen.erase_display(2));
+    });
+}
+
+fn bench_delete_insert_lines(c: &mut Criterion) {
+    let mut screen = Screen::new(80, 24);
+    screen.set_scroll_region(2, 20);
+    screen.cy = 5;
+    c.bench_function("insert+delete 10 lines", |b| {
+        b.iter(|| {
+            screen.insert_lines(10);
+            screen.delete_lines(10);
+        });
+    });
+}
+
+fn bench_selection_extract(c: &mut Criterion) {
+    use tm::state::{Pane, PaneId, Selection, State};
+    // Fill a pane with lots of text, then extract a large selection
+    let mut state = State::new();
+    let pid = state.alloc_pane_id();
+    let mut pane = Pane::new(pid, -1, 0, 80, 24);
+    // Fill 1000 history lines
+    for _ in 0..1000 {
+        for col in 0..80 {
+            let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
+            pane.screen.grid.visible_line_mut(0).unwrap().set_cell(col, &content);
+        }
+        pane.screen.grid.scroll_up(0, 23);
+    }
+    state.panes.insert(pid, pane);
+    let hsize = state.panes[&pid].screen.grid.hsize();
+
+    let sel = Selection {
+        pane: pid,
+        start_col: 0,
+        start_row: hsize.saturating_sub(500),
+        end_col: 79,
+        end_row: hsize.saturating_sub(1),
+    };
+    c.bench_function("extract_selection 500 lines", |b| {
+        b.iter(|| {
+            black_box(tm::key_bind::extract_selection(&state, pid, &sel));
+        });
+    });
+}
+
+fn bench_render_full_screen(c: &mut Criterion) {
+    use tm::config::Config;
+    use tm::state::{Client, Pane, PaneId, State};
+    // Build a state with a filled pane and render it
+    let mut state = State::new();
+    let config = Config::default_config();
+    let pid = state.alloc_pane_id();
+    let mut pane = Pane::new(pid, -1, 0, 80, 24);
+    // Fill visible lines
+    for row in 0..24 {
+        for col in 0..80 {
+            let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
+            pane.screen.grid.visible_line_mut(row).unwrap().set_cell(col, &content);
+        }
+    }
+    state.panes.insert(pid, pane);
+    let sid = state.create_session("bench", pid, 80, 25);
+    let cid = state.alloc_client_id();
+    state.clients.insert(cid, Client::new(cid, -1, -1, 80, 25, sid));
+    // Mark all dirty
+    for row in 0..24u32 {
+        if let Some(pane) = state.panes.get_mut(&pid) {
+            if let Some(line) = pane.screen.grid.visible_line_mut(row) {
+                line.mark_dirty();
+            }
+        }
+    }
+    c.bench_function("render full 80x24 screen", |b| {
+        let mut tty = TtyWriter::new();
+        b.iter(|| {
+            tty.buf.clear();
+            tty.reset_state();
+            tm::render::render_client(&state, &config, cid, &mut tty);
+            black_box(tty.buf.len());
+        });
+    });
+}
+
+fn bench_layout_calculate(c: &mut Criterion) {
+    use tm::layout::{LayoutNode, SplitDir};
+    use tm::state::PaneId;
+    // Build a complex layout: 4 panes in a nested split
+    let layout = LayoutNode::Split {
+        dir: SplitDir::Horizontal,
+        children: vec![
+            LayoutNode::Split {
+                dir: SplitDir::Vertical,
+                children: vec![
+                    LayoutNode::Pane(PaneId(0)),
+                    LayoutNode::Pane(PaneId(1)),
+                    LayoutNode::Pane(PaneId(2)),
+                ],
+            },
+            LayoutNode::Split {
+                dir: SplitDir::Vertical,
+                children: vec![
+                    LayoutNode::Pane(PaneId(3)),
+                    LayoutNode::Pane(PaneId(4)),
+                ],
+            },
+        ],
+    };
+    c.bench_function("layout calculate 5 panes", |b| {
+        b.iter(|| black_box(layout.calculate(0, 0, 200, 50)));
+    });
+}
+
+fn bench_protocol_encode_decode(c: &mut Criterion) {
+    use tm::protocol::{Message, MSG_INPUT};
+    let payload = vec![0x41u8; 256];
+    let msg = Message::new(MSG_INPUT, payload);
+    let encoded = msg.encode();
+    c.bench_function("protocol encode+decode 256B", |b| {
+        b.iter(|| {
+            let enc = msg.encode();
+            let (dec, _) = Message::decode(black_box(&enc)).unwrap();
+            black_box(dec.payload.len());
+        });
+    });
+}
+
+fn bench_mouse_drag_input(c: &mut Criterion) {
+    // 200 mouse drag events — realistic for click-drag selection
+    let mut data = Vec::new();
+    for i in 0..200u32 {
+        let x = 10 + (i % 60);
+        let y = 5 + (i / 60);
+        data.extend_from_slice(format!("\x1b[<32;{x};{y}M").as_bytes());
+    }
+    c.bench_function("parse_input 200 mouse drags", |b| {
+        b.iter(|| {
+            keys::parse_input(black_box(&data));
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Groups
 // ---------------------------------------------------------------------------
 
@@ -348,4 +595,23 @@ criterion_group!(
     bench_simd_scan_64k,
 );
 
-criterion_main!(grid_benches, vt_benches, screen_benches, input_benches, tty_benches, simd_benches);
+criterion_group!(
+    name = slow_path_benches;
+    config = fast();
+    targets =
+    bench_vt_utf8_cjk,
+    bench_vt_mixed_ascii_utf8,
+    bench_scroll_region,
+    bench_scroll_down,
+    bench_vt_htop_frame,
+    bench_vt_htop_unchanged,
+    bench_erase_large,
+    bench_delete_insert_lines,
+    bench_selection_extract,
+    bench_render_full_screen,
+    bench_layout_calculate,
+    bench_protocol_encode_decode,
+    bench_mouse_drag_input,
+);
+
+criterion_main!(grid_benches, vt_benches, screen_benches, input_benches, tty_benches, simd_benches, slow_path_benches);

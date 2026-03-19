@@ -1077,7 +1077,7 @@ fn process_mouse(
     }
 }
 
-fn extract_selection(state: &State, pid: PaneId, sel: &crate::state::Selection) -> String {
+pub fn extract_selection(state: &State, pid: PaneId, sel: &crate::state::Selection) -> String {
     let Some(pane) = state.panes.get(&pid) else {
         return String::new();
     };
