@@ -412,6 +412,9 @@ pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
                 pane.screen.resize(geo.sx, geo.sy);
                 pane.alt_screen.resize(geo.sx, geo.sy);
                 let _ = crate::sys::set_winsize(pane.pty_master, geo.sx, geo.sy);
+                // Explicitly signal the pane process in case TIOCSWINSZ
+                // didn't deliver SIGWINCH (e.g. process group mismatch)
+                unsafe { libc::kill(pane.pid, libc::SIGWINCH); }
             }
             pane.flags |= crate::state::PaneFlags::REDRAW;
         }
@@ -864,11 +867,9 @@ fn exit_copy_mode(state: &mut State, cid: ClientId) {
         client.mode = ClientMode::Normal;
         client.copy_oy = 0;
         client.sel = None;
-        let mut tty = crate::tty::TtyWriter::new();
-        tty.clear_screen();
-        tty.flush_to(client.tty_fd).ok();
     }
     mark_all_dirty(state);
+    clear_client_screen(state, cid);
 }
 
 fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
