@@ -283,7 +283,11 @@ fn register_new_connection(
     poll: &mut Poll,
     client_tokens: &mut HashMap<Token, ClientId>,
 ) -> Result<()> {
-    // Receive the client's tty fd (blocking — before setting nonblock).
+    // Ensure the socket is blocking for the initial handshake.
+    // Accepted sockets may inherit non-blocking from the listener on some platforms.
+    sys::set_blocking(sock_fd)?;
+
+    // Receive the client's tty fd.
     // Returns None for non-interactive clients (ls, kill).
     let tty_fd = match protocol::recv_fd(sock_fd)? {
         Some(fd) => fd,

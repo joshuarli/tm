@@ -13,6 +13,18 @@ pub(crate) fn set_nonblock(fd: RawFd) -> io::Result<()> {
     Ok(())
 }
 
+/// Set a file descriptor to blocking mode.
+pub(crate) fn set_blocking(fd: RawFd) -> io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 /// Set close-on-exec on a file descriptor.
 pub(crate) fn set_cloexec(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
