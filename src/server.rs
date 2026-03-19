@@ -135,6 +135,7 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
         let mut dead_clients: Vec<ClientId> = Vec::new();
         let mut dead_panes: Vec<PaneId> = Vec::new();
         let mut force_render = false;
+        let mut needs_full_clear = false;
 
         // Expire status messages
         let client_ids: Vec<ClientId> = state.clients.keys().copied().collect();
@@ -239,6 +240,7 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
         for pid in &dead_panes {
             handle_pane_death(&mut state, &mut poll, &mut pane_tokens, *pid);
             force_render = true;
+            needs_full_clear = true;
         }
 
         // Handle dead clients
@@ -265,9 +267,12 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
         }
 
         // Render on tick
-        if needs_render || force_render {
+        if needs_render || force_render || needs_full_clear {
             let now = Instant::now();
-            if now.duration_since(last_render) >= tick_interval || force_render {
+            if now.duration_since(last_render) >= tick_interval || force_render || needs_full_clear {
+                if needs_full_clear {
+                    clear_all_clients(&state, &mut tty);
+                }
                 render_all_clients(&mut state, &config, &mut tty);
                 last_render = now;
                 needs_render = false;
@@ -920,6 +925,17 @@ fn cleanup_client(
     }
     state.clients.remove(&cid);
     client_tokens.remove(&token);
+}
+
+/// Clear the entire screen for all clients (used after layout changes).
+fn clear_all_clients(state: &State, tty: &mut TtyWriter) {
+    for client in state.clients.values() {
+        if client.session.0 == u32::MAX {
+            continue;
+        }
+        tty.clear_screen();
+        tty.flush_to(client.tty_fd).ok();
+    }
 }
 
 fn render_all_clients(state: &mut State, config: &Config, tty: &mut TtyWriter) {
