@@ -1208,8 +1208,7 @@ fn click_status_bar(state: &mut State, cid: ClientId, x: u32) -> InputResult {
 fn pane_wants_mouse(state: &State, pid: PaneId) -> bool {
     state.panes.get(&pid).is_some_and(|p| {
         let mode = p.active_screen().mode;
-        p.is_alt_screen()
-            || mode.has(crate::screen::ScreenMode::MOUSE_BUTTON)
+        mode.has(crate::screen::ScreenMode::MOUSE_BUTTON)
             || mode.has(crate::screen::ScreenMode::MOUSE_ANY)
     })
 }
@@ -1244,10 +1243,6 @@ fn forward_mouse_to_pane(state: &State, pid: PaneId, mouse: &MouseEvent) -> Inpu
         .mode
         .has(crate::screen::ScreenMode::MOUSE_SGR);
 
-    if !use_sgr {
-        return InputResult::None; // Only support SGR mode
-    }
-
     // Translate coordinates to pane-local
     let (cb, x, y, final_ch) = match mouse {
         MouseEvent::Press { button, x, y } => {
@@ -1277,8 +1272,24 @@ fn forward_mouse_to_pane(state: &State, pid: PaneId, mouse: &MouseEvent) -> Inpu
         }
     };
 
-    let seq = format!("\x1b[<{cb};{x};{y}{final_ch}");
-    InputResult::PtyWrite(pid, seq.into_bytes())
+    if use_sgr {
+        let seq = format!("\x1b[<{cb};{x};{y}{final_ch}");
+        InputResult::PtyWrite(pid, seq.into_bytes())
+    } else {
+        // Legacy X10/normal encoding: ESC [ M Cb Cx Cy (each byte = value + 32)
+        // Coordinates capped at 223 (byte max 255 - 32).
+        let cb_byte = (cb + 32).min(255) as u8;
+        let x_byte = (x + 32).min(255) as u8;
+        let y_byte = (y + 32).min(255) as u8;
+        if final_ch == 'm' {
+            // Legacy release: button code 3 (= #3 release)
+            let seq = vec![0x1b, b'[', b'M', 3 + 32, x_byte, y_byte];
+            InputResult::PtyWrite(pid, seq)
+        } else {
+            let seq = vec![0x1b, b'[', b'M', cb_byte, x_byte, y_byte];
+            InputResult::PtyWrite(pid, seq)
+        }
+    }
 }
 
 /// Convert a key code to bytes for writing to a PTY.

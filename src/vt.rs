@@ -36,8 +36,6 @@ pub enum VtAction {
     Cwd(String),
     /// OSC 52 — clipboard content (base64-encoded).
     Clipboard(String),
-    /// Switch to/from alternate screen. `save_cursor`: also save/restore cursor (mode 1049).
-    AltScreen { enter: bool, save_cursor: bool },
     /// Bracketed paste mode changed.
     BracketedPaste(bool),
     /// Focus events mode changed.
@@ -869,20 +867,13 @@ impl VtParser {
                     }
                 }
                 47 | 1047 => {
-                    // Alternate screen buffer
-                    actions.push(VtAction::AltScreen {
-                        enter: enable,
-                        save_cursor: false,
-                    });
+                    // Alternate screen buffer — switch inline so subsequent
+                    // mode changes (mouse, cursor visibility) hit the right screen.
+                    pane.alt_screen(enable, false);
                 }
                 1049 => {
                     // Alternate screen buffer + save/restore cursor
-                    // Cursor save/restore is deferred to the server alongside
-                    // the alt screen switch so they happen in the right order.
-                    actions.push(VtAction::AltScreen {
-                        enter: enable,
-                        save_cursor: true,
-                    });
+                    pane.alt_screen(enable, true);
                 }
                 1000 => {
                     // Mouse button tracking
@@ -1248,6 +1239,21 @@ impl<'a> PaneScreenAccess<'a> {
         self.pane.active_screen_mut()
     }
 
+    /// Switch to/from alternate screen buffer, optionally saving/restoring cursor.
+    pub fn alt_screen(&mut self, enter: bool, save_cursor: bool) {
+        if enter {
+            if save_cursor {
+                self.pane.screen.save_cursor();
+            }
+            self.pane.enter_alt_screen();
+        } else {
+            self.pane.exit_alt_screen();
+            if save_cursor {
+                self.pane.screen.restore_cursor();
+            }
+        }
+    }
+
     /// Write data back to the PTY master (response to the application).
     pub fn write_back(&self, data: &[u8]) {
         let _ = crate::sys::write_all_fd(self.pane.pty_master, data);
@@ -1445,12 +1451,10 @@ mod tests {
     fn test_alt_screen() {
         let mut pane = make_test_pane(80, 24);
         process_pane_output(&mut pane, b"Normal");
-        let actions = process_pane_output(&mut pane, b"\x1b[?1049h");
-        assert!(
-            actions
-                .iter()
-                .any(|a| matches!(a, VtAction::AltScreen { enter: true, .. }))
-        );
+        process_pane_output(&mut pane, b"\x1b[?1049h");
+        assert!(pane.is_alt_screen());
+        process_pane_output(&mut pane, b"\x1b[?1049l");
+        assert!(!pane.is_alt_screen());
     }
 
     #[test]
@@ -1605,38 +1609,31 @@ mod tests {
     }
 
     #[test]
-    fn test_1049_alt_screen_emits_save_cursor_flag() {
+    fn test_1049_saves_and_restores_cursor() {
         let mut pane = make_test_pane(80, 24);
-        let actions = process_pane_output(&mut pane, b"\x1b[?1049h");
-        assert!(actions.iter().any(|a| matches!(
-            a,
-            VtAction::AltScreen {
-                enter: true,
-                save_cursor: true
-            }
-        )));
+        // Move cursor to (5, 10), then enter alt screen with save
+        process_pane_output(&mut pane, b"\x1b[6;11H");
+        assert_eq!(pane.screen.cy, 5);
+        assert_eq!(pane.screen.cx, 10);
+        process_pane_output(&mut pane, b"\x1b[?1049h");
+        assert!(pane.is_alt_screen());
+        // Alt screen starts at (0, 0)
+        assert_eq!(pane.active_screen().cx, 0);
 
-        let actions = process_pane_output(&mut pane, b"\x1b[?1049l");
-        assert!(actions.iter().any(|a| matches!(
-            a,
-            VtAction::AltScreen {
-                enter: false,
-                save_cursor: true
-            }
-        )));
+        // Exit alt screen — cursor restored
+        process_pane_output(&mut pane, b"\x1b[?1049l");
+        assert!(!pane.is_alt_screen());
+        assert_eq!(pane.screen.cy, 5);
+        assert_eq!(pane.screen.cx, 10);
     }
 
     #[test]
     fn test_47_alt_screen_no_save_cursor() {
         let mut pane = make_test_pane(80, 24);
-        let actions = process_pane_output(&mut pane, b"\x1b[?47h");
-        assert!(actions.iter().any(|a| matches!(
-            a,
-            VtAction::AltScreen {
-                enter: true,
-                save_cursor: false
-            }
-        )));
+        process_pane_output(&mut pane, b"\x1b[?47h");
+        assert!(pane.is_alt_screen());
+        process_pane_output(&mut pane, b"\x1b[?47l");
+        assert!(!pane.is_alt_screen());
     }
 
     #[test]
@@ -1666,5 +1663,21 @@ mod tests {
         process_pane_output(&mut pane, b"\x1b[HZ");
         let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
         assert_eq!(cell.ch[0], b'Z');
+    }
+
+    #[test]
+    fn test_alt_screen_modes_apply_to_alt() {
+        let mut pane = make_test_pane(80, 24);
+        // Simulate a typical TUI app: enter alt screen then set modes + hide cursor
+        process_pane_output(
+            &mut pane,
+            b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?25l",
+        );
+        assert!(pane.is_alt_screen());
+        let alt = pane.active_screen();
+        assert!(alt.mode.has(ScreenMode::MOUSE_BUTTON));
+        assert!(alt.mode.has(ScreenMode::MOUSE_ANY));
+        assert!(alt.mode.has(ScreenMode::MOUSE_SGR));
+        assert!(!alt.mode.has(ScreenMode::CURSOR_VISIBLE));
     }
 }

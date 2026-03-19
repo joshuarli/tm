@@ -820,20 +820,6 @@ fn handle_pane_data(
     // Handle actions
     for action in actions {
         match action {
-            vt::VtAction::AltScreen { enter, save_cursor } => {
-                let pane = state.panes.get_mut(&pid).expect("pane exists for fd");
-                if enter {
-                    if save_cursor {
-                        pane.screen.save_cursor();
-                    }
-                    pane.enter_alt_screen();
-                } else {
-                    pane.exit_alt_screen();
-                    if save_cursor {
-                        pane.screen.restore_cursor();
-                    }
-                }
-            }
             vt::VtAction::Cwd(path) => {
                 if let Some(pane) = state.panes.get_mut(&pid) {
                     pane.cwd = Some(path);
