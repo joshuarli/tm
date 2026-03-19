@@ -108,9 +108,10 @@ pub(crate) fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
         // Try to parse an escape sequence
         if remaining[0] == 0x1B {
             if remaining.len() == 1 {
-                // Lone ESC — could be prefix to a sequence, wait for more data
-                // But if this is all we have, treat as Escape key
-                break;
+                // Lone ESC — treat as Escape key (escape-time is 0)
+                events.push(InputEvent::Key(KeyCode(KeyCode::ESCAPE)));
+                pos += 1;
+                continue;
             }
 
             // Focus events: ESC [ I / ESC [ O
@@ -206,8 +207,18 @@ pub(crate) fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
                 events.push(InputEvent::Key(KeyCode(b' ' as u32 | KeyCode::CTRL)));
                 pos += 1;
             }
+            0x09 => {
+                // Tab
+                events.push(InputEvent::Key(KeyCode(KeyCode::TAB)));
+                pos += 1;
+            }
+            0x0A | 0x0D => {
+                // Enter (LF or CR)
+                events.push(InputEvent::Key(KeyCode(KeyCode::ENTER)));
+                pos += 1;
+            }
             0x01..=0x1A => {
-                // Ctrl-A through Ctrl-Z
+                // Ctrl-A through Ctrl-Z (excluding Tab=0x09, LF=0x0A, CR=0x0D above)
                 let ch = (remaining[0] + b'a' - 1) as u32;
                 events.push(InputEvent::Key(KeyCode(ch | KeyCode::CTRL)));
                 pos += 1;
@@ -513,6 +524,52 @@ mod tests {
                 assert_eq!(*y, 19);
             }
             other => panic!("expected wheel up, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_enter() {
+        let (events, consumed) = parse_input(b"\x0d");
+        assert_eq!(consumed, 1);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Key(k) => assert_eq!(k.base(), KeyCode::ENTER),
+            _ => panic!("expected Enter key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_tab() {
+        let (events, consumed) = parse_input(b"\x09");
+        assert_eq!(consumed, 1);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Key(k) => assert_eq!(k.base(), KeyCode::TAB),
+            _ => panic!("expected Tab key"),
+        }
+    }
+
+    #[test]
+    fn test_parse_escape() {
+        let (events, consumed) = parse_input(b"\x1b");
+        assert_eq!(consumed, 1);
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Key(k) => assert_eq!(k.base(), KeyCode::ESCAPE),
+            _ => panic!("expected Escape key"),
+        }
+    }
+
+    #[test]
+    fn test_enter_not_ctrl_m() {
+        // Enter (0x0D) should be ENTER, not Ctrl-M
+        let (events, _) = parse_input(b"\x0d");
+        match &events[0] {
+            InputEvent::Key(k) => {
+                assert_eq!(k.base(), KeyCode::ENTER);
+                assert!(!k.has_ctrl(), "Enter should not have CTRL flag");
+            }
+            _ => panic!("expected key"),
         }
     }
 }
