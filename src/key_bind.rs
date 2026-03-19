@@ -14,6 +14,8 @@ pub(crate) enum InputResult {
     Detach,
     /// Needs a full redraw.
     Redraw,
+    /// A new pane was created — server must register its PTY with mio.
+    NewPane(PaneId),
     /// Status message to display.
     StatusMessage(String),
     /// Multiple results.
@@ -205,12 +207,18 @@ fn dispatch_action(
             InputResult::Redraw
         }
         Action::SplitH => {
-            split_pane(state, cid, crate::layout::SplitDir::Horizontal);
-            InputResult::Redraw
+            if let Some(pid) = split_pane(state, cid, crate::layout::SplitDir::Horizontal) {
+                InputResult::Multi(vec![InputResult::NewPane(pid), InputResult::Redraw])
+            } else {
+                InputResult::None
+            }
         }
         Action::SplitV => {
-            split_pane(state, cid, crate::layout::SplitDir::Vertical);
-            InputResult::Redraw
+            if let Some(pid) = split_pane(state, cid, crate::layout::SplitDir::Vertical) {
+                InputResult::Multi(vec![InputResult::NewPane(pid), InputResult::Redraw])
+            } else {
+                InputResult::None
+            }
         }
         Action::KillPane => {
             kill_active_pane(state, cid);
@@ -333,20 +341,13 @@ fn swap_window(state: &mut State, cid: ClientId, delta: i32) {
     state.renumber_windows(sid);
 }
 
-pub(crate) fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir) {
-    let Some(wid) = state.active_window_for_client(cid) else {
-        return;
-    };
-    let Some(pid) = state.active_pane_for_client(cid) else {
-        return;
-    };
+pub(crate) fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir) -> Option<PaneId> {
+    let wid = state.active_window_for_client(cid)?;
+    let pid = state.active_pane_for_client(cid)?;
 
-    // Get CWD from current pane
     let cwd = state.panes.get(&pid).and_then(|p| p.cwd.clone());
-
     let new_pid = state.alloc_pane_id();
 
-    // Spawn new PTY
     let socket_path = crate::protocol::socket_path();
     let (sx, sy) = state
         .panes
@@ -354,25 +355,14 @@ pub(crate) fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::S
         .map(|p| (p.sx, p.sy))
         .unwrap_or((80, 24));
 
-    let (master, child_pid) = match crate::pty::spawn_shell(
-        sx,
-        sy,
-        cwd.as_deref(),
-        &socket_path,
-        std::process::id(),
-        new_pid.0,
-    ) {
-        Ok(r) => r,
-        Err(_) => return,
-    };
+    let (master, child_pid) = crate::pty::spawn_shell(
+        sx, sy, cwd.as_deref(), &socket_path, std::process::id(), new_pid.0,
+    ).ok()?;
 
     let pane = crate::state::Pane::new(new_pid, master, child_pid, sx, sy);
     state.panes.insert(new_pid, pane);
 
-    // Update layout
-    let Some(window) = state.windows.get_mut(&wid) else {
-        return;
-    };
+    let window = state.windows.get_mut(&wid)?;
     window.layout.split_pane(pid, new_pid, dir);
     window.panes.push(new_pid);
     window.active_pane = new_pid;
@@ -381,8 +371,8 @@ pub(crate) fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::S
         pane.window = wid;
     }
 
-    // Recalculate layout
     recalc_layout(state, wid);
+    Some(new_pid)
 }
 
 pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
@@ -750,7 +740,7 @@ fn create_new_window(state: &mut State, cid: ClientId, name: &str) -> InputResul
     }
 
     state.renumber_windows(sid);
-    InputResult::Redraw
+    InputResult::Multi(vec![InputResult::NewPane(pid), InputResult::Redraw])
 }
 
 fn move_pane_to_window(state: &mut State, cid: ClientId, target_idx: u32) {

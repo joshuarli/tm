@@ -633,6 +633,9 @@ fn apply_result(
         InputResult::Redraw => {
             *force_render = true;
         }
+        InputResult::NewPane(pid) => {
+            new_panes.push(pid);
+        }
         InputResult::StatusMessage(msg) => {
             // Check if this is a config reload
             if msg == "configuration reloaded" {
