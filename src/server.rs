@@ -432,13 +432,12 @@ fn handle_identify(
     tty.flush_to(client.tty_fd).ok();
 
     let has_name = !name.is_empty();
-    let session_name = if has_name { name } else { "0".to_string() };
 
     let sid = if msg.msg_type == protocol::MSG_ATTACH {
+        let session_name = if has_name { name } else { "0".to_string() };
         if let Some(sid) = state.find_session_by_name(&session_name) {
             sid
         } else if !has_name {
-            // No name given — attach to first session, or create one
             if let Some(&sid) = state.sessions.keys().next() {
                 sid
             } else {
@@ -453,6 +452,29 @@ fn handle_identify(
             return Err(());
         }
     } else {
+        // MSG_NEW_SESSION
+        let session_name = if has_name {
+            // Check for duplicate
+            if state.find_session_by_name(&name).is_some() {
+                send_to_client(
+                    state,
+                    cid,
+                    &Message::new(protocol::MSG_ERROR, format!("duplicate session: {name}").into_bytes()),
+                );
+                return Err(());
+            }
+            name
+        } else {
+            // Auto-generate: "0", "1", "2", ...
+            let mut n = 0u32;
+            loop {
+                let candidate = n.to_string();
+                if state.find_session_by_name(&candidate).is_none() {
+                    break candidate;
+                }
+                n += 1;
+            }
+        };
         create_session(state, &session_name, sx, sy, new_panes)?
     };
 
