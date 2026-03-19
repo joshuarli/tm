@@ -208,13 +208,23 @@ impl GridLine {
         }
 
         // Handle wide characters: mark the next cell as a continuation
-        if content.ch_width == 2 && (col + 1) < self.compact.len() {
-            let next = &mut self.compact[col + 1];
-            next.ch = b' ';
-            next.attr = 0;
-            next.fg = 0;
-            next.bg = 0;
-            next.flags = CompactCell::WIDE_CONT | CompactCell::DIRTY;
+        if content.ch_width == 2 {
+            if (col + 1) < self.compact.len() {
+                let next = &mut self.compact[col + 1];
+                next.ch = b' ';
+                next.attr = 0;
+                next.fg = 0;
+                next.bg = 0;
+                next.flags = CompactCell::WIDE_CONT | CompactCell::DIRTY;
+            } else {
+                // Wide char can't fit — replace with a space to avoid orphan
+                let c = &mut self.compact[col];
+                c.ch = b' ';
+                c.attr = 0;
+                c.fg = 0;
+                c.bg = 0;
+                c.flags = CompactCell::DIRTY;
+            }
         }
     }
 
@@ -1026,5 +1036,34 @@ mod tests {
             assert_eq!(row.get_cell(i as u32).ch[0], ch);
         }
         assert!(!row.flags.has(LineFlags::WRAPPED));
+    }
+
+    #[test]
+    fn test_wide_char_at_right_margin_replaced_with_space() {
+        let mut line = GridLine::new(5);
+        let content = CellContent {
+            ch: {
+                let mut b = [0u8; 8];
+                // CJK character U+4E00 (一), 3-byte UTF-8
+                b[0] = 0xE4;
+                b[1] = 0xB8;
+                b[2] = 0x80;
+                b
+            },
+            ch_len: 3,
+            ch_width: 2,
+            attr: CellAttr::default(),
+            fg: Color::Default,
+            bg: Color::Default,
+            us: Color::Default,
+        };
+        // Place wide char at last column — no room for continuation
+        line.set_cell(4, &content);
+
+        // Should be replaced with a space (no orphaned half-character)
+        let c = &line.compact[4];
+        assert_eq!(c.ch, b' ');
+        assert!(!c.is_extended());
+        assert!(c.is_dirty());
     }
 }

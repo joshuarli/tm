@@ -164,6 +164,34 @@ pub fn ignore_sigpipe() {
     }
 }
 
+/// Write all bytes to a file descriptor, handling EINTR and partial writes.
+/// Returns the total bytes written (may be less than `buf.len()` on error or EAGAIN).
+pub fn write_all_fd(fd: RawFd, buf: &[u8]) -> io::Result<usize> {
+    let mut written = 0;
+    while written < buf.len() {
+        // SAFETY: writing to a valid file descriptor.
+        let n = unsafe {
+            libc::write(
+                fd,
+                buf[written..].as_ptr() as *const libc::c_void,
+                buf.len() - written,
+            )
+        };
+        if n < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            if err.kind() == io::ErrorKind::WouldBlock && written > 0 {
+                return Ok(written);
+            }
+            return Err(err);
+        }
+        written += n as usize;
+    }
+    Ok(written)
+}
+
 pub fn close_fd(fd: RawFd) {
     if fd >= 0 {
         // SAFETY: closing a valid file descriptor.
@@ -223,5 +251,21 @@ mod tests {
         assert_eq!(n, 1);
 
         close_fd(read_fd);
+    }
+
+    #[test]
+    fn test_write_all_fd() {
+        let (r, w) = pipe_cloexec().unwrap();
+        let msg = b"hello world";
+        let n = write_all_fd(w, msg).unwrap();
+        assert_eq!(n, msg.len());
+
+        let mut buf = [0u8; 32];
+        let n = unsafe { libc::read(r, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+        assert_eq!(n as usize, msg.len());
+        assert_eq!(&buf[..msg.len()], msg);
+
+        close_fd(r);
+        close_fd(w);
     }
 }

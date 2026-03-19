@@ -36,8 +36,8 @@ pub enum VtAction {
     Cwd(String),
     /// OSC 52 — clipboard content (base64-encoded).
     Clipboard(String),
-    /// Switch to/from alternate screen.
-    AltScreen(bool),
+    /// Switch to/from alternate screen. `save_cursor`: also save/restore cursor (mode 1049).
+    AltScreen { enter: bool, save_cursor: bool },
     /// Bracketed paste mode changed.
     BracketedPaste(bool),
     /// Focus events mode changed.
@@ -477,13 +477,17 @@ impl VtParser {
         match byte {
             0x30..=0x39 => {
                 // Digit — start collecting parameter
-                self.params.push((byte - 0x30) as u16);
+                if self.params.len() < 256 {
+                    self.params.push((byte - 0x30) as u16);
+                }
                 self.state = VtState::CsiParam;
             }
             0x3B => {
                 // Semicolon — empty first param (default)
                 self.params.push(0);
-                self.params.push(0);
+                if self.params.len() < 256 {
+                    self.params.push(0);
+                }
                 self.state = VtState::CsiParam;
             }
             0x3C..=0x3F => {
@@ -516,7 +520,7 @@ impl VtParser {
                 // Digit — accumulate
                 if let Some(last) = self.params.last_mut() {
                     *last = last.saturating_mul(10).saturating_add((byte - 0x30) as u16);
-                } else {
+                } else if self.params.len() < 256 {
                     self.params.push((byte - 0x30) as u16);
                 }
             }
@@ -525,7 +529,9 @@ impl VtParser {
                 if self.params.is_empty() {
                     self.params.push(0);
                 }
-                self.params.push(0);
+                if self.params.len() < 256 {
+                    self.params.push(0);
+                }
             }
             0x3A => {
                 // Colon — sub-parameter separator (used in SGR for underline style)
@@ -533,7 +539,9 @@ impl VtParser {
                 if self.params.is_empty() {
                     self.params.push(0);
                 }
-                self.params.push(0);
+                if self.params.len() < 256 {
+                    self.params.push(0);
+                }
             }
             0x3C..=0x3F => {
                 // Private marker in the middle — push as intermediate
@@ -862,17 +870,19 @@ impl VtParser {
                 }
                 47 | 1047 => {
                     // Alternate screen buffer
-                    actions.push(VtAction::AltScreen(enable));
+                    actions.push(VtAction::AltScreen {
+                        enter: enable,
+                        save_cursor: false,
+                    });
                 }
                 1049 => {
                     // Alternate screen buffer + save/restore cursor
-                    if enable {
-                        pane.screen_mut().save_cursor();
-                    }
-                    actions.push(VtAction::AltScreen(enable));
-                    if !enable {
-                        pane.screen_mut().restore_cursor();
-                    }
+                    // Cursor save/restore is deferred to the server alongside
+                    // the alt screen switch so they happen in the right order.
+                    actions.push(VtAction::AltScreen {
+                        enter: enable,
+                        save_cursor: true,
+                    });
                 }
                 1000 => {
                     // Mouse button tracking
@@ -897,6 +907,11 @@ impl VtParser {
                     } else {
                         pane.screen_mut().mode.clear(ScreenMode::MOUSE_ANY);
                     }
+                }
+                1005 | 1015 => {
+                    // UTF-8 (1005) and urxvt (1015) mouse modes — legacy, accepted
+                    // silently. SGR mode (1006) is preferred; programs that send
+                    // these will typically also negotiate 1006.
                 }
                 1006 => {
                     // SGR mouse mode
@@ -1114,7 +1129,13 @@ impl VtParser {
                 self.state = VtState::Ground;
             }
             _ => {
-                self.osc_buf.push(byte);
+                if self.osc_buf.len() < 65536 {
+                    self.osc_buf.push(byte);
+                } else {
+                    // Discard oversized OSC sequence
+                    self.osc_buf.clear();
+                    self.state = VtState::Ground;
+                }
             }
         }
     }
@@ -1229,14 +1250,7 @@ impl<'a> PaneScreenAccess<'a> {
 
     /// Write data back to the PTY master (response to the application).
     pub fn write_back(&self, data: &[u8]) {
-        // SAFETY: writing to a valid PTY master fd.
-        unsafe {
-            libc::write(
-                self.pane.pty_master,
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-            );
-        }
+        let _ = crate::sys::write_all_fd(self.pane.pty_master, data);
     }
 }
 
@@ -1435,7 +1449,7 @@ mod tests {
         assert!(
             actions
                 .iter()
-                .any(|a| matches!(a, VtAction::AltScreen(true)))
+                .any(|a| matches!(a, VtAction::AltScreen { enter: true, .. }))
         );
     }
 
@@ -1588,5 +1602,69 @@ mod tests {
         let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
         assert_eq!(cell.ch[0], b'A');
         assert_eq!(pane.screen.cx, 3);
+    }
+
+    #[test]
+    fn test_1049_alt_screen_emits_save_cursor_flag() {
+        let mut pane = make_test_pane(80, 24);
+        let actions = process_pane_output(&mut pane, b"\x1b[?1049h");
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            VtAction::AltScreen {
+                enter: true,
+                save_cursor: true
+            }
+        )));
+
+        let actions = process_pane_output(&mut pane, b"\x1b[?1049l");
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            VtAction::AltScreen {
+                enter: false,
+                save_cursor: true
+            }
+        )));
+    }
+
+    #[test]
+    fn test_47_alt_screen_no_save_cursor() {
+        let mut pane = make_test_pane(80, 24);
+        let actions = process_pane_output(&mut pane, b"\x1b[?47h");
+        assert!(actions.iter().any(|a| matches!(
+            a,
+            VtAction::AltScreen {
+                enter: true,
+                save_cursor: false
+            }
+        )));
+    }
+
+    #[test]
+    fn test_mouse_modes_1005_1015_accepted() {
+        let mut pane = make_test_pane(80, 24);
+        // These should not panic or produce error actions
+        process_pane_output(&mut pane, b"\x1b[?1005h");
+        process_pane_output(&mut pane, b"\x1b[?1015h");
+        process_pane_output(&mut pane, b"\x1b[?1005l");
+        process_pane_output(&mut pane, b"\x1b[?1015l");
+        // Parser should be in ground state — verify by writing a char
+        process_pane_output(&mut pane, b"X");
+        let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'X');
+    }
+
+    #[test]
+    fn test_osc_buf_cap() {
+        let mut pane = make_test_pane(80, 24);
+        // Start an OSC sequence then send >64KB of data
+        let mut data = Vec::with_capacity(70000);
+        data.extend_from_slice(b"\x1b]2;");
+        data.resize(data.len() + 66000, b'A');
+        // Don't terminate — parser should bail after cap is hit
+        process_pane_output(&mut pane, &data);
+        // Parser should have recovered to ground state — cursor home + write Z
+        process_pane_output(&mut pane, b"\x1b[HZ");
+        let cell = pane.screen.grid.visible_line(0).unwrap().get_cell(0);
+        assert_eq!(cell.ch[0], b'Z');
     }
 }

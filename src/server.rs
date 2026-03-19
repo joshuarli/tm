@@ -657,13 +657,7 @@ fn apply_result(
         InputResult::None => {}
         InputResult::PtyWrite(pid, data) => {
             if let Some(pane) = state.panes.get(&pid) {
-                unsafe {
-                    libc::write(
-                        pane.pty_master,
-                        data.as_ptr() as *const libc::c_void,
-                        data.len(),
-                    );
-                }
+                let _ = sys::write_all_fd(pane.pty_master, &data);
             }
         }
         InputResult::Detach => {
@@ -826,12 +820,18 @@ fn handle_pane_data(
     // Handle actions
     for action in actions {
         match action {
-            vt::VtAction::AltScreen(enter) => {
+            vt::VtAction::AltScreen { enter, save_cursor } => {
                 let pane = state.panes.get_mut(&pid).expect("pane exists for fd");
                 if enter {
+                    if save_cursor {
+                        pane.screen.save_cursor();
+                    }
                     pane.enter_alt_screen();
                 } else {
                     pane.exit_alt_screen();
+                    if save_cursor {
+                        pane.screen.restore_cursor();
+                    }
                 }
             }
             vt::VtAction::Cwd(path) => {
@@ -988,13 +988,7 @@ fn render_all_clients(state: &mut State, config: &Config, tty: &mut TtyWriter) {
 fn send_to_client(state: &State, cid: ClientId, msg: &Message) {
     if let Some(client) = state.clients.get(&cid) {
         let data = msg.encode();
-        unsafe {
-            libc::write(
-                client.socket_fd,
-                data.as_ptr() as *const libc::c_void,
-                data.len(),
-            );
-        }
+        let _ = sys::write_all_fd(client.socket_fd, &data);
     }
 }
 
