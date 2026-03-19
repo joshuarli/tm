@@ -67,11 +67,10 @@ impl VtParser {
         let mut actions = Vec::new();
         let mut i = 0;
         while i < data.len() {
-            // Fast path: batch printable ASCII in Ground state when the
-            // current cell style fits in a CompactCell (no RGB, no insert mode)
-            if self.state == VtState::Ground
-                && self.utf8_need == 0
-            {
+            // Fast path: handle ASCII text + common controls inline in Ground state.
+            // This avoids per-byte state machine dispatch for the ~95% of terminal
+            // traffic that is printable ASCII, newlines, and carriage returns.
+            if self.state == VtState::Ground && self.utf8_need == 0 {
                 let screen = pane.screen_mut();
                 let can_fast = !screen.mode.has(crate::screen::ScreenMode::INSERT)
                     && screen.cell.attr.fits_compact()
@@ -79,19 +78,54 @@ impl VtParser {
                     && matches!(screen.cell.bg, crate::grid::Color::Default | crate::grid::Color::Palette(_))
                     && matches!(screen.cell.us, crate::grid::Color::Default);
                 if can_fast {
-                    let start = i;
+                    let mut advanced = false;
                     while i < data.len() {
                         let b = data[i];
-                        if b >= 0x20 && b <= 0x7E {
-                            i += 1;
-                        } else {
-                            break;
+                        match b {
+                            0x20..=0x7E => {
+                                // Printable ASCII — write directly to CompactCell
+                                screen.put_ascii(b);
+                                i += 1;
+                                advanced = true;
+                            }
+                            0x0A => {
+                                // LF — linefeed
+                                screen.linefeed();
+                                i += 1;
+                                advanced = true;
+                            }
+                            0x0D => {
+                                // CR — carriage return
+                                screen.carriage_return();
+                                i += 1;
+                                advanced = true;
+                            }
+                            0x08 => {
+                                // BS — backspace
+                                screen.backspace();
+                                i += 1;
+                                advanced = true;
+                            }
+                            0x09 => {
+                                // TAB
+                                screen.tab();
+                                i += 1;
+                                advanced = true;
+                            }
+                            0x1B => {
+                                // ESC — try CSI fast path before falling to state machine
+                                if let Some(consumed) = self.try_csi_fast(pane, &data[i..], &mut actions) {
+                                    i += consumed;
+                                    advanced = true;
+                                    // Re-check can_fast after CSI (SGR may have changed colors)
+                                    break;
+                                }
+                                break; // fall to state machine
+                            }
+                            _ => break, // anything else: fall to state machine
                         }
                     }
-                    if i > start {
-                        for &byte in &data[start..i] {
-                            screen.put_ascii(byte);
-                        }
+                    if advanced {
                         continue;
                     }
                 }
@@ -100,6 +134,137 @@ impl VtParser {
             i += 1;
         }
         actions
+    }
+
+    /// Try to parse a CSI sequence directly from the buffer without the state machine.
+    /// Returns Some(bytes_consumed) on success, None if not a recognized fast-path sequence.
+    fn try_csi_fast(
+        &mut self,
+        pane: &mut PaneScreenAccess,
+        buf: &[u8],
+        actions: &mut Vec<VtAction>,
+    ) -> Option<usize> {
+        // Need at least ESC [ <final>
+        if buf.len() < 3 || buf[0] != 0x1B || buf[1] != b'[' {
+            return None;
+        }
+
+        let params = &buf[2..];
+
+        // ESC[m — SGR reset (most common)
+        if params.first() == Some(&b'm') {
+            pane.screen_mut().cell = crate::grid::CellContent::default();
+            return Some(3);
+        }
+
+        // ESC[K — erase to end of line (default mode 0)
+        if params.first() == Some(&b'K') {
+            pane.screen_mut().erase_line(0);
+            return Some(3);
+        }
+
+        // ESC[H — cursor home
+        if params.first() == Some(&b'H') {
+            pane.screen_mut().cursor_to(0, 0);
+            return Some(3);
+        }
+
+        // ESC[J — erase display (default mode 0)
+        if params.first() == Some(&b'J') {
+            pane.screen_mut().erase_display(0);
+            return Some(3);
+        }
+
+        // Parse numeric parameters: ESC[ N1 ; N2 ; ... <final>
+        // Scan for the final byte (0x40-0x7E), collecting params
+        let mut p = [0u16; 8];
+        let mut pi = 0;
+        let mut j = 0;
+        while j < params.len() {
+            match params[j] {
+                b'0'..=b'9' => {
+                    if pi < p.len() {
+                        p[pi] = p[pi].saturating_mul(10).saturating_add((params[j] - b'0') as u16);
+                    }
+                    j += 1;
+                }
+                b';' => {
+                    pi += 1;
+                    j += 1;
+                }
+                b':' => {
+                    // Colon sub-params — bail to state machine for complex SGR
+                    return None;
+                }
+                b'?' | b'>' | b'!' | b' ' => {
+                    // Private/intermediate — bail
+                    return None;
+                }
+                0x40..=0x7E => {
+                    let nparams = pi + 1;
+                    let total = 2 + j + 1; // ESC[ + params + final
+                    match params[j] {
+                        b'm' => {
+                            // SGR — set params and dispatch
+                            self.params.clear();
+                            for k in 0..nparams {
+                                self.params.push(p[k]);
+                            }
+                            self.sgr(pane);
+                            return Some(total);
+                        }
+                        b'H' | b'f' => {
+                            let row = if p[0] == 0 { 0 } else { p[0] as u32 - 1 };
+                            let col = if nparams > 1 && p[1] > 0 { p[1] as u32 - 1 } else { 0 };
+                            pane.screen_mut().cursor_to(row, col);
+                            return Some(total);
+                        }
+                        b'A' => {
+                            pane.screen_mut().cursor_up(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            return Some(total);
+                        }
+                        b'B' => {
+                            pane.screen_mut().cursor_down(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            return Some(total);
+                        }
+                        b'C' => {
+                            pane.screen_mut().cursor_right(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            return Some(total);
+                        }
+                        b'D' => {
+                            pane.screen_mut().cursor_left(if p[0] == 0 { 1 } else { p[0] as u32 });
+                            return Some(total);
+                        }
+                        b'G' => {
+                            let col = if p[0] == 0 { 0 } else { p[0] as u32 - 1 };
+                            let screen = pane.screen_mut();
+                            screen.cx = col.min(screen.sx() - 1);
+                            screen.pending_wrap = false;
+                            return Some(total);
+                        }
+                        b'J' => {
+                            pane.screen_mut().erase_display(p[0] as u32);
+                            return Some(total);
+                        }
+                        b'K' => {
+                            pane.screen_mut().erase_line(p[0] as u32);
+                            return Some(total);
+                        }
+                        b'r' => {
+                            let screen = pane.screen_mut();
+                            let top = if p[0] == 0 { 0 } else { p[0] as u32 - 1 };
+                            let bot = if nparams > 1 && p[1] > 0 { p[1] as u32 - 1 } else { screen.sy() - 1 };
+                            screen.set_scroll_region(top, bot);
+                            return Some(total);
+                        }
+                        _ => return None,
+                    }
+                }
+                _ => return None, // unexpected byte
+            }
+        }
+        // Incomplete sequence — don't consume, let state machine handle it
+        None
     }
 
     fn process_byte(
