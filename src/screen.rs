@@ -140,48 +140,69 @@ impl Screen {
         }
     }
 
-    /// Fast path for printable ASCII with current cell style.
-    /// Skips UTF-8, insert mode, extended cell checks.
+    /// Fast path for a single printable ASCII byte.
     #[inline]
     pub fn put_ascii(&mut self, byte: u8) {
-        let sx = self.sx();
+        self.put_ascii_run(std::slice::from_ref(&byte));
+    }
 
-        if self.pending_wrap {
-            self.pending_wrap = false;
-            if self.mode.has(ScreenMode::WRAP) {
-                if let Some(line) = self.grid.visible_line_mut(self.cy) {
-                    line.flags.0 |= crate::grid::LineFlags::WRAPPED;
+    /// Batch-write a run of printable ASCII bytes. Each byte is 0x20..=0x7E.
+    /// Handles line wrapping: fills to the right margin, wraps, continues.
+    /// Gets the line pointer and pre-computes attr/fg/bg once per row segment.
+    pub fn put_ascii_run(&mut self, bytes: &[u8]) {
+        let sx = self.sx() as usize;
+        let attr = self.cell.attr.basic();
+        let fg = match self.cell.fg {
+            crate::grid::Color::Palette(p) => p,
+            _ => 0,
+        };
+        let bg = match self.cell.bg {
+            crate::grid::Color::Palette(p) => p,
+            _ => 0,
+        };
+
+        let mut i = 0;
+        while i < bytes.len() {
+            // Handle pending wrap from previous put
+            if self.pending_wrap {
+                self.pending_wrap = false;
+                if self.mode.has(ScreenMode::WRAP) {
+                    if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                        line.flags.0 |= crate::grid::LineFlags::WRAPPED;
+                    }
+                    self.carriage_return();
+                    self.linefeed();
                 }
-                self.carriage_return();
-                self.linefeed();
             }
-        }
 
-        // Write directly to CompactCell — no CellContent intermediary
-        if let Some(line) = self.grid.visible_line_mut(self.cy) {
-            let col = self.cx as usize;
-            if col < line.compact.len() {
-                let c = &mut line.compact[col];
-                c.ch = byte;
-                c.attr = self.cell.attr.basic();
-                c.fg = match self.cell.fg {
-                    crate::grid::Color::Palette(p) => p,
-                    _ => 0,
-                };
-                c.bg = match self.cell.bg {
-                    crate::grid::Color::Palette(p) => p,
-                    _ => 0,
-                };
-                c.flags = crate::grid::CompactCell::DIRTY;
+            // How many bytes can we write on this line?
+            let cx = self.cx as usize;
+            let avail = sx.saturating_sub(cx);
+            if avail == 0 {
+                break;
             }
-        }
+            let n = (bytes.len() - i).min(avail);
 
-        let new_cx = self.cx + 1;
-        if new_cx >= sx {
-            self.cx = sx - 1;
-            self.pending_wrap = true;
-        } else {
-            self.cx = new_cx;
+            // Get the line pointer ONCE and write N cells in a tight loop
+            if let Some(line) = self.grid.visible_line_mut(self.cy) {
+                let cells = &mut line.compact[cx..cx + n];
+                for (j, c) in cells.iter_mut().enumerate() {
+                    c.ch = bytes[i + j];
+                    c.attr = attr;
+                    c.fg = fg;
+                    c.bg = bg;
+                    c.flags = crate::grid::CompactCell::DIRTY;
+                }
+            }
+
+            i += n;
+            let new_cx = (cx + n) as u32;
+            if new_cx >= sx as u32 {
+                self.cx = sx as u32 - 1;
+                self.pending_wrap = true;
+            } else {
+                self.cx = new_cx;
+            }
         }
     }
 

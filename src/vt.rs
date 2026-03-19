@@ -83,9 +83,7 @@ impl VtParser {
                         // SIMD scan: find the length of the printable ASCII run
                         let ascii_run = crate::simd::SimdScanner::scan(&data[i..]);
                         if ascii_run > 0 {
-                            for &byte in &data[i..i + ascii_run] {
-                                screen.put_ascii(byte);
-                            }
+                            screen.put_ascii_run(&data[i..i + ascii_run]);
                             i += ascii_run;
                             advanced = true;
                             continue;
