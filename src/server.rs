@@ -839,17 +839,9 @@ fn handle_pane_data(
                     pane.cwd = Some(path);
                 }
             }
-            vt::VtAction::Title(title) => {
-                // Update window name if this is the active pane
-                if let Some(pane) = state.panes.get(&pid) {
-                    let wid = pane.window;
-                    if let Some(window) = state.windows.get(&wid)
-                        && window.active_pane == pid
-                        && let Some(window) = state.windows.get_mut(&wid)
-                    {
-                        window.name = title;
-                    }
-                }
+            vt::VtAction::Title(_) => {
+                // Ignore — applications cannot rename windows.
+                // Equivalent of tmux's allow-rename off / set-titles off.
             }
             vt::VtAction::Clipboard(data) => {
                 // Forward OSC 52 to all clients viewing this pane
