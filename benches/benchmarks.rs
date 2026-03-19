@@ -2,6 +2,7 @@ use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::time::Duration;
 
 use tm::grid::{CellContent, Grid, GridLine, LineFlags};
+use tm::simd::SimdScanner;
 use tm::keys;
 use tm::screen::Screen;
 use tm::state::{Pane, PaneId};
@@ -111,9 +112,18 @@ fn make_test_pane(sx: u32, sy: u32) -> Pane {
 }
 
 fn bench_vt_ascii(c: &mut Criterion) {
-    // Simulate a program printing lots of ASCII text
     let data: Vec<u8> = (0..4096).map(|i| b'A' + (i % 26) as u8).collect();
     c.bench_function("vt parse 4KB ASCII", |b| {
+        let mut pane = make_test_pane(80, 24);
+        b.iter(|| {
+            vt::process_pane_output(&mut pane, black_box(&data));
+        });
+    });
+}
+
+fn bench_vt_ascii_64k(c: &mut Criterion) {
+    let data: Vec<u8> = (0..65536).map(|i| b'A' + (i % 26) as u8).collect();
+    c.bench_function("vt parse 64KB ASCII", |b| {
         let mut pane = make_test_pane(80, 24);
         b.iter(|| {
             vt::process_pane_output(&mut pane, black_box(&data));
@@ -285,6 +295,7 @@ criterion_group!(
     config = fast();
     targets =
     bench_vt_ascii,
+    bench_vt_ascii_64k,
     bench_vt_sgr_colors,
     bench_vt_cursor_movement,
     bench_vt_scroll,
@@ -315,4 +326,26 @@ criterion_group!(
     bench_tty_set_cell_attrs,
 );
 
-criterion_main!(grid_benches, vt_benches, screen_benches, input_benches, tty_benches);
+fn bench_simd_scan_4k(c: &mut Criterion) {
+    let data = vec![b'A'; 4096];
+    c.bench_function("SIMD scan 4KB ASCII", |b| {
+        b.iter(|| black_box(SimdScanner::scan(black_box(&data))));
+    });
+}
+
+fn bench_simd_scan_64k(c: &mut Criterion) {
+    let data = vec![b'A'; 65536];
+    c.bench_function("SIMD scan 64KB ASCII", |b| {
+        b.iter(|| black_box(SimdScanner::scan(black_box(&data))));
+    });
+}
+
+criterion_group!(
+    name = simd_benches;
+    config = fast();
+    targets =
+    bench_simd_scan_4k,
+    bench_simd_scan_64k,
+);
+
+criterion_main!(grid_benches, vt_benches, screen_benches, input_benches, tty_benches, simd_benches);

@@ -80,49 +80,49 @@ impl VtParser {
                 if can_fast {
                     let mut advanced = false;
                     while i < data.len() {
-                        let b = data[i];
-                        match b {
-                            0x20..=0x7E => {
-                                // Printable ASCII — write directly to CompactCell
-                                screen.put_ascii(b);
-                                i += 1;
-                                advanced = true;
+                        // SIMD scan: find the length of the printable ASCII run
+                        let ascii_run = crate::simd::SimdScanner::scan(&data[i..]);
+                        if ascii_run > 0 {
+                            for &byte in &data[i..i + ascii_run] {
+                                screen.put_ascii(byte);
                             }
+                            i += ascii_run;
+                            advanced = true;
+                            continue;
+                        }
+
+                        // Not printable ASCII — handle common controls inline
+                        match data[i] {
                             0x0A => {
-                                // LF — linefeed
                                 screen.linefeed();
                                 i += 1;
                                 advanced = true;
                             }
                             0x0D => {
-                                // CR — carriage return
                                 screen.carriage_return();
                                 i += 1;
                                 advanced = true;
                             }
                             0x08 => {
-                                // BS — backspace
                                 screen.backspace();
                                 i += 1;
                                 advanced = true;
                             }
                             0x09 => {
-                                // TAB
                                 screen.tab();
                                 i += 1;
                                 advanced = true;
                             }
                             0x1B => {
-                                // ESC — try CSI fast path before falling to state machine
+                                // ESC — try CSI fast path
                                 if let Some(consumed) = self.try_csi_fast(pane, &data[i..], &mut actions) {
                                     i += consumed;
                                     advanced = true;
-                                    // Re-check can_fast after CSI (SGR may have changed colors)
-                                    break;
+                                    break; // re-check can_fast after SGR change
                                 }
                                 break; // fall to state machine
                             }
-                            _ => break, // anything else: fall to state machine
+                            _ => break,
                         }
                     }
                     if advanced {

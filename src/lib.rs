@@ -12,6 +12,7 @@ pub mod protocol;
 pub mod pty;
 pub mod render;
 pub mod screen;
+pub mod simd;
 pub mod state;
 pub mod sys;
 pub mod tty;

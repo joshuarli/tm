@@ -14,6 +14,7 @@ mod pty;
 mod render;
 mod screen;
 mod server;
+mod simd;
 mod state;
 mod sys;
 mod tty;
