@@ -24,6 +24,47 @@ tmux is 91K lines of C with a full command language (Bison parser), 145 configur
 - IPC protocol: `[u32 length][u16 type][payload]` — no external serialization library
 - One socket serves all sessions
 
+### Server Startup (socketpair, like tmux)
+
+The initial client and server communicate via a `socketpair`, not the listening socket. This eliminates the race condition between server `bind()`/`listen()` and client `connect()`.
+
+```
+tm new:
+  1. socketpair(AF_UNIX, SOCK_STREAM) → pair[0], pair[1]
+  2. fork()
+     Child (server):
+       - close(pair[0])
+       - redirect stdio to /dev/null (but do NOT setsid — see below)
+       - run_server_with_client(pair[1])
+         - bind() listening socket for future clients
+         - register pair[1] as first client connection (no accept needed)
+         - enter event loop
+     Parent (client):
+       - close(pair[1])
+       - run_client_on_fd(pair[0])
+         - send tty fd via SCM_RIGHTS on pair[0]
+         - send MSG_NEW_SESSION
+         - enter raw mode, forward input
+
+tm attach / tm ls / tm kill:
+  1. connect() to the listening socket
+  2. For interactive (attach): send tty fd via SCM_RIGHTS, then MSG_ATTACH
+  3. For non-interactive (ls/kill): send plain byte (no fd), then message
+  4. Server's recv_fd() returns Option<RawFd> to handle both cases
+```
+
+**Why not setsid()**: The server writes escape sequences directly to client tty fds received via SCM_RIGHTS. Calling `setsid()` detaches the server from the controlling terminal, causing `write()` to those fds to fail with `EIO` on macOS. Only redirect stdio to `/dev/null`.
+
+**Accepted socket non-blocking inheritance**: On macOS, sockets accepted from a non-blocking listener may inherit the non-blocking flag. The server must call `set_blocking()` on each accepted socket before `recv_fd()`, or `recvmsg()` will fail with `EAGAIN`.
+
+**SCM_RIGHTS cmsg alignment**: The cmsg buffer for `sendmsg`/`recvmsg` must be properly aligned for `cmsghdr`. Use a `#[repr(C)]` struct, not `Vec<u8>`.
+
+**EINTR handling**: `SIGCHLD` from pane child processes interrupts `poll()`, `recvmsg()`, and `sendmsg()`. All three need retry loops. `mio::Poll::poll()` returns `io::ErrorKind::Interrupted` which must be caught with `match`, not `?`.
+
+**kqueue and /dev/tty**: On macOS, `open("/dev/tty")` returns a device fd that kqueue rejects with `EINVAL`. The client must use `STDIN_FILENO` (fd 0) for mio polling — it's the same tty as a pty slave fd that kqueue accepts. The `/dev/tty` fd is only passed to the server for rendering.
+
+**Pane PTY registration**: When `split_pane` or `create_new_window` spawns a new PTY, the master fd must be registered with mio or the server will never read its output. This is done via `InputResult::NewPane(pid)` which the server's `apply_result` pushes to `new_panes` for registration after the event dispatch.
+
 ### Event Loop
 - Single-threaded, mio-based
 - 16ms render tick (~60fps): collect all pane output, dirty cells, render once
@@ -52,9 +93,11 @@ struct State {
 
 ### Server Lifecycle
 - Server starts when first `tm new` is run (no existing socket)
-- Server exits when last session dies (all pane processes exited)
-- SIGTERM: just exit — kernel closes PTY masters, sends SIGHUP to pane processes
-- SIGCHLD: reap pane processes, cascade close (last pane → close window → last window → end session → detach client)
+- Server tracks `had_session` flag — it only exits after at least one session has existed and all sessions are gone (prevents exit before the first client connects)
+- Server exits when last session dies: detach all remaining clients, clean up socket, return
+- SIGTERM: clean shutdown — restore client terminals, remove socket
+- SIGCHLD: reap via `waitpid(-1, WNOHANG)` in a loop, cascade close (last pane → close window → last window → end session → detach client)
+- On pane death: clear full screen before redrawing so layout reflows cleanly
 - SIGWINCH: resize client tty, recalculate layouts
 
 ## Data Structures
