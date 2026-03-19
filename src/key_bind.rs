@@ -412,9 +412,9 @@ pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
                 pane.screen.resize(geo.sx, geo.sy);
                 pane.alt_screen.resize(geo.sx, geo.sy);
                 let _ = crate::sys::set_winsize(pane.pty_master, geo.sx, geo.sy);
-                // Explicitly signal the pane process in case TIOCSWINSZ
-                // didn't deliver SIGWINCH (e.g. process group mismatch)
-                unsafe { libc::kill(pane.pid, libc::SIGWINCH); }
+                // Signal the entire process group so all processes in the
+                // pane (shell + children) see the resize
+                unsafe { libc::killpg(pane.pid, libc::SIGWINCH); }
             }
             pane.flags |= crate::state::PaneFlags::REDRAW;
         }
