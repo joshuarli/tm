@@ -966,7 +966,7 @@ fn process_mouse(
                 return click_status_bar(state, cid, x);
             }
 
-            // Click on pane area — focus pane + start selection
+            // Find which pane was clicked
             let Some(wid) = state.active_window_for_client(cid) else {
                 return InputResult::None;
             };
@@ -974,33 +974,52 @@ fn process_mouse(
                 return InputResult::None;
             };
             let geos = window.layout.calculate(0, 0, window.sx, window.sy);
-            if let Some(pid) = crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y) {
-                if let Some(window) = state.windows.get_mut(&wid)
-                    && window.active_pane != pid
-                {
-                    window.active_pane = pid;
+            let pid = crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y);
+
+            // Focus the clicked pane
+            if let Some(pid) = pid
+                && let Some(window) = state.windows.get_mut(&wid)
+                && window.active_pane != pid
+            {
+                window.active_pane = pid;
+            }
+
+            // If pane wants mouse, forward the click
+            if let Some(pid) = pid.or(state.active_pane_for_client(cid))
+                && pane_wants_mouse(state, pid)
+            {
+                return forward_mouse_to_pane(state, pid, &mouse);
+            }
+
+            // Otherwise start a selection
+            let pid = pid.unwrap_or_else(|| state.active_pane_for_client(cid).unwrap_or(PaneId(0)));
+            if let Some(pane) = state.panes.get(&pid) {
+                let local_col = x.saturating_sub(pane.xoff);
+                let local_row = y.saturating_sub(pane.yoff);
+                let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
+                let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
+                if let Some(client) = state.clients.get_mut(&cid) {
+                    client.sel = Some(crate::state::Selection {
+                        pane: pid,
+                        start_col: local_col,
+                        start_row: abs_row,
+                        end_col: local_col,
+                        end_row: abs_row,
+                    });
                 }
-                if let Some(pane) = state.panes.get(&pid) {
-                    let local_col = x.saturating_sub(pane.xoff);
-                    let local_row = y.saturating_sub(pane.yoff);
-                    let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
-                    let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
-                    if let Some(client) = state.clients.get_mut(&cid) {
-                        client.sel = Some(crate::state::Selection {
-                            pane: pid,
-                            start_col: local_col,
-                            start_row: abs_row,
-                            end_col: local_col,
-                            end_row: abs_row,
-                        });
-                    }
-                    return InputResult::Redraw;
-                }
+                return InputResult::Redraw;
             }
             InputResult::None
         }
         MouseEvent::Drag { button: 0, x, y } => {
-            // Extend selection — enter copy mode on first drag
+            // If the active pane wants mouse, forward the drag
+            if let Some(pid) = state.active_pane_for_client(cid)
+                && pane_wants_mouse(state, pid)
+            {
+                return forward_mouse_to_pane(state, pid, &mouse);
+            }
+
+            // Otherwise extend selection
             let Some(client) = state.clients.get(&cid) else {
                 return InputResult::None;
             };
@@ -1010,7 +1029,7 @@ fn process_mouse(
             let pid = sel.pane;
 
             // Enter copy mode if not already in it
-            if client.mode != ClientMode::CopyMode && !pane_wants_mouse(state, pid) {
+            if client.mode != ClientMode::CopyMode {
                 enter_copy_mode(state, cid, pid);
             }
 
@@ -1030,7 +1049,14 @@ fn process_mouse(
             InputResult::None
         }
         MouseEvent::Release { .. } => {
-            // End selection — extract text and send to clipboard via OSC 52
+            // If the active pane wants mouse, forward the release
+            if let Some(pid) = state.active_pane_for_client(cid)
+                && pane_wants_mouse(state, pid)
+            {
+                return forward_mouse_to_pane(state, pid, &mouse);
+            }
+
+            // Otherwise finalize selection
             let Some(client) = state.clients.get(&cid) else {
                 return InputResult::None;
             };
