@@ -820,13 +820,14 @@ fn handle_pane_data(
     let data = &buf[..n as usize];
 
     // Process VT100 escape sequences
-    let actions = vt::process_pane_output(state.panes.get_mut(&pid).unwrap(), data);
+    let actions =
+        vt::process_pane_output(state.panes.get_mut(&pid).expect("pane exists for fd"), data);
 
     // Handle actions
     for action in actions {
         match action {
             vt::VtAction::AltScreen(enter) => {
-                let pane = state.panes.get_mut(&pid).unwrap();
+                let pane = state.panes.get_mut(&pid).expect("pane exists for fd");
                 if enter {
                     pane.enter_alt_screen();
                 } else {

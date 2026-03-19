@@ -408,7 +408,7 @@ impl Grid {
         if top == 0 && bottom == self.sy.saturating_sub(1) {
             // Reuse a discarded history line if available, avoiding allocation
             let new_line = if self.hsize() >= self.hlimit {
-                let mut recycled = self.lines.pop_front().unwrap();
+                let mut recycled = self.lines.pop_front().expect("hsize >= hlimit > 0");
                 recycled.clear_to(self.sx);
                 recycled
             } else {

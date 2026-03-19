@@ -24,7 +24,6 @@ pub struct VtParser {
     utf8_buf: [u8; 4],
     utf8_len: u8,
     utf8_need: u8,
-    final_byte: u8,
 }
 
 /// Actions emitted by the parser that the caller handles.
@@ -63,7 +62,6 @@ impl VtParser {
             utf8_buf: [0; 4],
             utf8_len: 0,
             utf8_need: 0,
-            final_byte: 0,
         }
     }
 
@@ -1304,29 +1302,6 @@ pub fn process_pane_output(pane: &mut Pane, data: &[u8]) -> Vec<VtAction> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::screen::Screen;
-
-    /// Helper: create a screen and feed VT data to it via the parser.
-    fn feed_screen(sx: u32, sy: u32, data: &[u8]) -> Screen {
-        let _screen = Screen::new(sx, sy);
-        let mut parser = VtParser::new();
-
-        // We need a Pane to use PaneScreenAccess, but for tests
-        // we can work around it by using a test-specific approach.
-        // Actually, let's create a minimal pane with invalid fds.
-        let mut pane = Pane::new(
-            crate::state::PaneId(0),
-            -1, // invalid fd, but we won't write to it in tests
-            0,
-            sx,
-            sy,
-        );
-
-        let mut access = PaneScreenAccess::new(&mut pane);
-        let _actions = parser.feed(&mut access, data);
-        // Extract the screen
-        std::mem::replace(&mut pane.screen, Screen::new(1, 1))
-    }
 
     // Alternative approach: just create a Pane and use process_pane_output
     fn make_test_pane(sx: u32, sy: u32) -> Pane {

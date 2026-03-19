@@ -53,15 +53,15 @@ fn child_exec(cwd: Option<&str>, socket_path: &Path, server_pid: u32, pane_id: u
     let tm_val = format!("{},{},{}", socket_path.display(), server_pid, pane_id);
 
     unsafe {
-        let key = CString::new("TERM").unwrap();
-        let val = CString::new("tmux-256color").unwrap();
+        let key = CString::new("TERM").expect("no NUL in literal");
+        let val = CString::new("tmux-256color").expect("no NUL in literal");
         libc::setenv(key.as_ptr(), val.as_ptr(), 1);
 
-        let key = CString::new("TM").unwrap();
-        let val = CString::new(tm_val.as_str()).unwrap();
+        let key = CString::new("TM").expect("no NUL in literal");
+        let val = CString::new(tm_val.as_str()).expect("no NUL in format string");
         libc::setenv(key.as_ptr(), val.as_ptr(), 1);
 
-        let key = CString::new("TMUX").unwrap();
+        let key = CString::new("TMUX").expect("no NUL in literal");
         libc::setenv(key.as_ptr(), val.as_ptr(), 1);
     }
 
@@ -82,8 +82,8 @@ fn child_exec(cwd: Option<&str>, socket_path: &Path, server_pid: u32, pane_id: u
         .to_string_lossy();
     let login_name = format!("-{shell_name}");
 
-    let shell_c = CString::new(shell.as_str()).unwrap();
-    let argv0 = CString::new(login_name.as_str()).unwrap();
+    let shell_c = CString::new(shell.as_str()).expect("shell path has no NUL");
+    let argv0 = CString::new(login_name.as_str()).expect("login name has no NUL");
 
     // SAFETY: execl replaces the process image with the shell.
     unsafe {

@@ -1423,10 +1423,6 @@ mod tests {
         matches!(r, InputResult::Detach)
     }
 
-    fn is_pty_write(r: &InputResult) -> bool {
-        matches!(r, InputResult::PtyWrite(..))
-    }
-
     fn pty_write_bytes(r: &InputResult) -> Option<(&PaneId, &Vec<u8>)> {
         match r {
             InputResult::PtyWrite(pid, data) => Some((pid, data)),

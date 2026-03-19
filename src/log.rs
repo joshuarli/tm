@@ -12,8 +12,10 @@ pub fn init() {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path) {
-        *LOG_FILE.lock().unwrap() = Some(f);
+    if let Ok(f) = OpenOptions::new().create(true).append(true).open(&path)
+        && let Ok(mut guard) = LOG_FILE.lock()
+    {
+        *guard = Some(f);
     }
 }
 
