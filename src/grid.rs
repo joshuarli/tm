@@ -391,9 +391,13 @@ impl Grid {
             while self.hsize() > self.hlimit {
                 self.lines.pop_front();
             }
-            // Mark the new line dirty
-            if let Some(line) = self.lines.back_mut() {
-                line.mark_dirty();
+            // Mark ALL visible lines dirty — every row now shows a different line
+            let hsize = self.hsize();
+            for row in 0..self.sy {
+                let abs = (hsize + row) as usize;
+                if let Some(line) = self.lines.get_mut(abs) {
+                    line.mark_dirty();
+                }
             }
         } else {
             // Scroll region: remove line at `top` of region, insert blank at `bottom`
