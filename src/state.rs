@@ -318,6 +318,7 @@ pub struct Client {
     pub mode: ClientMode,
     pub copy_oy: u32,           // scroll offset in copy mode (lines from bottom)
     pub copy_pane: PaneId,      // which pane is being scrolled
+    pub scroll_deferred: i32,   // accumulated scroll delta (coalesced over 16ms)
     pub sel: Option<Selection>, // click-drag text selection
     pub status_message: Option<(String, Instant)>,
     pub prompt_buf: Option<String>,
@@ -355,6 +356,7 @@ impl Client {
             mode: ClientMode::Normal,
             copy_oy: 0,
             copy_pane: PaneId(0),
+            scroll_deferred: 0,
             sel: None,
             status_message: None,
             prompt_buf: None,

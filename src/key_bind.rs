@@ -865,6 +865,7 @@ fn exit_copy_mode(state: &mut State, cid: ClientId) {
     if let Some(client) = state.clients.get_mut(&cid) {
         client.mode = ClientMode::Normal;
         client.copy_oy = 0;
+        client.scroll_deferred = 0;
         client.sel = None;
     }
     mark_all_dirty(state);
@@ -872,9 +873,26 @@ fn exit_copy_mode(state: &mut State, cid: ClientId) {
 }
 
 fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
+    // Accumulate scroll delta — flushed by the server on the 16ms render tick.
+    // This coalesces rapid wheel events into a single scroll + render.
+    if let Some(client) = state.clients.get_mut(&cid) {
+        client.scroll_deferred += delta;
+    }
+    // Don't return Redraw — the server's tick loop flushes deferred scrolls.
+    InputResult::None
+}
+
+/// Flush any accumulated scroll delta. Called from the server's render tick.
+/// Returns true if a redraw is needed.
+pub fn flush_scroll(state: &mut State, cid: ClientId) -> bool {
     let Some(client) = state.clients.get(&cid) else {
-        return InputResult::None;
+        return false;
     };
+    if client.mode != ClientMode::CopyMode || client.scroll_deferred == 0 {
+        return false;
+    }
+
+    let delta = client.scroll_deferred;
     let pane_id = client.copy_pane;
     let oy = client.copy_oy;
 
@@ -885,20 +903,24 @@ fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
         .unwrap_or(0);
 
     let new_oy = if delta > 0 {
-        // Scroll up (into history)
         oy.saturating_add(delta as u32).min(max_oy)
     } else {
-        // Scroll down (toward live)
         oy.saturating_sub((-delta) as u32)
     };
 
-    if new_oy == 0 {
-        exit_copy_mode(state, cid);
-    } else if let Some(client) = state.clients.get_mut(&cid) {
-        client.copy_oy = new_oy;
+    if let Some(client) = state.clients.get_mut(&cid) {
+        client.scroll_deferred = 0;
     }
 
-    InputResult::Redraw
+    if new_oy == 0 {
+        exit_copy_mode(state, cid);
+        true
+    } else {
+        if let Some(client) = state.clients.get_mut(&cid) {
+            client.copy_oy = new_oy;
+        }
+        true
+    }
 }
 
 fn process_copy_input(
@@ -1612,7 +1634,6 @@ mod tests {
     fn copy_scroll_up_increases_offset() {
         let (mut state, _config, cid, pid, _wid, _sid) = setup();
 
-        // Add some history so scrolling has room
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
         for _ in 0..10 {
             grid.scroll_up(0, grid.sy - 1);
@@ -1622,8 +1643,9 @@ mod tests {
 
         enter_copy_mode(&mut state, cid, pid);
 
-        let result = copy_scroll(&mut state, cid, 3);
-        assert!(is_redraw(&result));
+        copy_scroll(&mut state, cid, 3);
+        // Flush deferred scroll
+        assert!(flush_scroll(&mut state, cid));
         assert_eq!(state.clients[&cid].copy_oy, 3);
         assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
     }
@@ -1632,7 +1654,6 @@ mod tests {
     fn copy_scroll_down_to_zero_exits_copy_mode() {
         let (mut state, _config, cid, pid, _wid, _sid) = setup();
 
-        // Add some history
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
         for _ in 0..10 {
             grid.scroll_up(0, grid.sy - 1);
@@ -1641,9 +1662,8 @@ mod tests {
         enter_copy_mode(&mut state, cid, pid);
         state.clients.get_mut(&cid).unwrap().copy_oy = 2;
 
-        // Scroll down past 0
-        let result = copy_scroll(&mut state, cid, -5);
-        assert!(is_redraw(&result));
+        copy_scroll(&mut state, cid, -5);
+        assert!(flush_scroll(&mut state, cid));
         assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
         assert_eq!(state.clients[&cid].copy_oy, 0);
     }
@@ -1652,7 +1672,6 @@ mod tests {
     fn copy_scroll_clamped_to_max_history() {
         let (mut state, _config, cid, pid, _wid, _sid) = setup();
 
-        // Add exactly 5 history lines
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
         for _ in 0..5 {
             grid.scroll_up(0, grid.sy - 1);
@@ -1662,9 +1681,33 @@ mod tests {
         enter_copy_mode(&mut state, cid, pid);
 
         // Try to scroll far past history
-        let result = copy_scroll(&mut state, cid, 1000);
-        assert!(is_redraw(&result));
+        copy_scroll(&mut state, cid, 1000);
+        assert!(flush_scroll(&mut state, cid));
         assert_eq!(state.clients[&cid].copy_oy, hsize);
+    }
+
+    #[test]
+    fn copy_scroll_coalesces_multiple_deltas() {
+        let (mut state, _config, cid, pid, _wid, _sid) = setup();
+
+        let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
+        for _ in 0..20 {
+            grid.scroll_up(0, grid.sy - 1);
+        }
+
+        enter_copy_mode(&mut state, cid, pid);
+
+        // Multiple scroll events before flush — should coalesce
+        copy_scroll(&mut state, cid, 3);
+        copy_scroll(&mut state, cid, 3);
+        copy_scroll(&mut state, cid, 3);
+        assert_eq!(state.clients[&cid].scroll_deferred, 9);
+        assert_eq!(state.clients[&cid].copy_oy, 0); // not applied yet
+
+        // Single flush applies the accumulated delta
+        assert!(flush_scroll(&mut state, cid));
+        assert_eq!(state.clients[&cid].copy_oy, 9);
+        assert_eq!(state.clients[&cid].scroll_deferred, 0);
     }
 
     // =======================================================================

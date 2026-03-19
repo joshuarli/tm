@@ -292,6 +292,14 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
             return Ok(());
         }
 
+        // Flush deferred scroll deltas (coalesced over 16ms)
+        let client_ids_for_scroll: Vec<ClientId> = state.clients.keys().copied().collect();
+        for cid in client_ids_for_scroll {
+            if key_bind::flush_scroll(&mut state, cid) {
+                force_render = true;
+            }
+        }
+
         // Render on tick
         if needs_render || force_render {
             let now = Instant::now();
