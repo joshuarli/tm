@@ -1019,13 +1019,17 @@ fn process_mouse(
             // Extract selected text
             let text = extract_selection(state, pid, &sel);
 
-            // Clear selection and exit copy mode
+            // Clear selection and exit copy mode (full redraw)
+            let was_copy = state.clients.get(&cid).map_or(false, |c| c.mode == ClientMode::CopyMode);
             if let Some(client) = state.clients.get_mut(&cid) {
                 client.sel = None;
-                if client.mode == ClientMode::CopyMode {
-                    client.mode = ClientMode::Normal;
-                    client.copy_oy = 0;
-                }
+            }
+            if was_copy {
+                exit_copy_mode(state, cid);
+            } else {
+                // Even without copy mode, need full redraw to clear highlight
+                mark_all_dirty(state);
+                clear_client_screen(state, cid);
             }
 
             if !text.is_empty() {
