@@ -1,35 +1,35 @@
 use crate::keys::{self, KeyCode};
 
-pub(crate) struct Config {
-    pub(crate) prefix: KeyCode,
-    pub(crate) escape_time: u64,
-    pub(crate) mouse: bool,
-    pub(crate) history_limit: u32,
-    pub(crate) base_index: u32,
-    pub(crate) renumber_windows: bool,
-    pub(crate) focus_events: bool,
-    pub(crate) status_position: StatusPosition,
-    pub(crate) status_bg: crate::grid::Color,
-    pub(crate) status_fg: crate::grid::Color,
-    pub(crate) repeat_time: u64,
-    pub(crate) bindings: Vec<Binding>,
+pub struct Config {
+    pub prefix: KeyCode,
+    pub escape_time: u64,
+    pub mouse: bool,
+    pub history_limit: u32,
+    pub base_index: u32,
+    pub renumber_windows: bool,
+    pub focus_events: bool,
+    pub status_position: StatusPosition,
+    pub status_bg: crate::grid::Color,
+    pub status_fg: crate::grid::Color,
+    pub repeat_time: u64,
+    pub bindings: Vec<Binding>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum StatusPosition {
+pub enum StatusPosition {
     Bottom,
     Top,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Binding {
-    pub(crate) key: KeyCode,
-    pub(crate) action: Action,
-    pub(crate) repeat: bool,
+pub struct Binding {
+    pub key: KeyCode,
+    pub action: Action,
+    pub repeat: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum Action {
+pub enum Action {
     Detach,
     NewWindow,
     RenameWindow,
@@ -56,7 +56,7 @@ pub(crate) enum Action {
 }
 
 impl Config {
-    pub(crate) fn default_config() -> Self {
+    pub fn default_config() -> Self {
         let mut c = Self {
             prefix: KeyCode::ctrl('a'),
             escape_time: 0,
@@ -76,7 +76,7 @@ impl Config {
     }
 
     /// Load config from file, falling back to defaults.
-    pub(crate) fn load() -> Self {
+    pub fn load() -> Self {
         let mut config = Self::default_config();
 
         let path = config_path();
@@ -90,7 +90,7 @@ impl Config {
     }
 
     /// Reload: reset to defaults, then re-apply config file.
-    pub(crate) fn reload(&mut self) {
+    pub fn reload(&mut self) {
         *self = Self::default_config();
         let path = config_path();
         if let Ok(content) = std::fs::read_to_string(&path) {
@@ -98,7 +98,7 @@ impl Config {
         }
     }
 
-    pub(crate) fn find_binding(&self, key: KeyCode) -> Option<&Binding> {
+    pub fn find_binding(&self, key: KeyCode) -> Option<&Binding> {
         self.bindings.iter().find(|b| b.key == key)
     }
 }

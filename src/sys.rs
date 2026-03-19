@@ -2,7 +2,7 @@ use std::io;
 use std::os::unix::io::RawFd;
 
 /// Set a file descriptor to non-blocking mode.
-pub(crate) fn set_nonblock(fd: RawFd) -> io::Result<()> {
+pub fn set_nonblock(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
@@ -14,7 +14,7 @@ pub(crate) fn set_nonblock(fd: RawFd) -> io::Result<()> {
 }
 
 /// Set a file descriptor to blocking mode.
-pub(crate) fn set_blocking(fd: RawFd) -> io::Result<()> {
+pub fn set_blocking(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
@@ -26,7 +26,7 @@ pub(crate) fn set_blocking(fd: RawFd) -> io::Result<()> {
 }
 
 /// Set close-on-exec on a file descriptor.
-pub(crate) fn set_cloexec(fd: RawFd) -> io::Result<()> {
+pub fn set_cloexec(fd: RawFd) -> io::Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
     if flags < 0 {
         return Err(io::Error::last_os_error());
@@ -38,7 +38,7 @@ pub(crate) fn set_cloexec(fd: RawFd) -> io::Result<()> {
 }
 
 /// Create a pipe with close-on-exec set on both ends.
-pub(crate) fn pipe_cloexec() -> io::Result<(RawFd, RawFd)> {
+pub fn pipe_cloexec() -> io::Result<(RawFd, RawFd)> {
     let mut fds = [0i32; 2];
 
     #[cfg(target_os = "linux")]
@@ -68,7 +68,7 @@ pub(crate) fn pipe_cloexec() -> io::Result<(RawFd, RawFd)> {
 ///
 /// Returns the read end of the pipe. The signal handler writes to the write end.
 /// The write end is stored in a static so the signal handler can access it.
-pub(crate) fn signal_pipe(sig: libc::c_int) -> io::Result<RawFd> {
+pub fn signal_pipe(sig: libc::c_int) -> io::Result<RawFd> {
     let (read_fd, write_fd) = pipe_cloexec()?;
     set_nonblock(read_fd)?;
     set_nonblock(write_fd)?;
@@ -113,7 +113,7 @@ extern "C" fn signal_handler(sig: libc::c_int) {
 }
 
 /// Get terminal size from a tty fd.
-pub(crate) fn get_winsize(fd: RawFd) -> io::Result<(u32, u32)> {
+pub fn get_winsize(fd: RawFd) -> io::Result<(u32, u32)> {
     let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
     // SAFETY: TIOCGWINSZ is a safe ioctl that reads terminal dimensions.
     if unsafe { libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) } != 0 {
@@ -125,7 +125,7 @@ pub(crate) fn get_winsize(fd: RawFd) -> io::Result<(u32, u32)> {
 }
 
 /// Set terminal size on a pty fd.
-pub(crate) fn set_winsize(fd: RawFd, sx: u32, sy: u32) -> io::Result<()> {
+pub fn set_winsize(fd: RawFd, sx: u32, sy: u32) -> io::Result<()> {
     let ws = libc::winsize {
         ws_row: sy as u16,
         ws_col: sx as u16,
@@ -141,7 +141,7 @@ pub(crate) fn set_winsize(fd: RawFd, sx: u32, sy: u32) -> io::Result<()> {
 
 /// Block SIGCHLD, SIGWINCH, SIGTERM, SIGINT in the current thread.
 /// Call before spawning the event loop so signals are handled via the signal pipe.
-pub(crate) fn block_signals() {
+pub fn block_signals() {
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
@@ -153,13 +153,13 @@ pub(crate) fn block_signals() {
 }
 
 /// Ignore SIGPIPE (broken pipe from dead client connections).
-pub(crate) fn ignore_sigpipe() {
+pub fn ignore_sigpipe() {
     unsafe {
         libc::signal(libc::SIGPIPE, libc::SIG_IGN);
     }
 }
 
-pub(crate) fn close_fd(fd: RawFd) {
+pub fn close_fd(fd: RawFd) {
     if fd >= 0 {
         // SAFETY: closing a valid file descriptor.
         unsafe {

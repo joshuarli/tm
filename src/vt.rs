@@ -1,5 +1,4 @@
 use crate::grid::{CellAttr, Color};
-use crate::log::tm_log;
 use crate::screen::{CursorStyle, ScreenMode};
 use crate::state::Pane;
 
@@ -17,7 +16,7 @@ enum VtState {
     SosPmApc,
 }
 
-pub(crate) struct VtParser {
+pub struct VtParser {
     state: VtState,
     params: Vec<u16>,
     intermediates: Vec<u8>,
@@ -29,7 +28,7 @@ pub(crate) struct VtParser {
 }
 
 /// Actions emitted by the parser that the caller handles.
-pub(crate) enum VtAction {
+pub enum VtAction {
     /// Forward cursor style change to client terminal.
     CursorStyle(CursorStyle),
     /// Set window title.
@@ -49,7 +48,7 @@ pub(crate) enum VtAction {
 }
 
 impl VtParser {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             state: VtState::Ground,
             params: Vec::with_capacity(16),
@@ -64,7 +63,7 @@ impl VtParser {
 
     /// Feed raw bytes from the PTY into the parser, updating the pane's screen.
     /// Returns actions that need to be forwarded to the client.
-    pub(crate) fn feed(&mut self, pane: &mut PaneScreenAccess, data: &[u8]) -> Vec<VtAction> {
+    pub fn feed(&mut self, pane: &mut PaneScreenAccess, data: &[u8]) -> Vec<VtAction> {
         let mut actions = Vec::new();
         for &byte in data {
             self.process_byte(pane, byte, &mut actions);
@@ -238,7 +237,7 @@ impl VtParser {
             }
             _ => {
                 // Unknown — return to ground
-                tm_log!("unknown ESC {byte:#04x}");
+                crate::log::log(&format!("unknown ESC {byte:#04x}"));
                 self.state = VtState::Ground;
             }
         }
@@ -620,17 +619,11 @@ impl VtParser {
                 // Some programs query these
             }
             _ => {
-                tm_log!(
+                crate::log::log(&format!(
                     "unknown CSI {}{}",
-                    if is_private {
-                        "?"
-                    } else if is_gt {
-                        ">"
-                    } else {
-                        ""
-                    },
+                    if is_private { "?" } else if is_gt { ">" } else { "" },
                     byte as char
-                );
+                ));
             }
         }
     }
@@ -753,11 +746,11 @@ impl VtParser {
                     }
                 }
                 _ => {
-                    tm_log!(
+                    crate::log::log(&format!(
                         "unknown DECSET/DECRST {}{}",
                         param,
                         if enable { "h" } else { "l" }
-                    );
+                    ));
                 }
             }
         }
@@ -979,7 +972,7 @@ impl VtParser {
                 }
             }
             _ => {
-                tm_log!("unknown OSC {cmd}");
+                crate::log::log(&format!("unknown OSC {cmd}"));
             }
         }
     }
@@ -1021,21 +1014,21 @@ impl VtParser {
 /// Trait-like access to pane's screen, avoiding borrow issues.
 /// This wraps a mutable reference to a Pane and provides the
 /// operations the VT parser needs.
-pub(crate) struct PaneScreenAccess<'a> {
+pub struct PaneScreenAccess<'a> {
     pane: &'a mut Pane,
 }
 
 impl<'a> PaneScreenAccess<'a> {
-    pub(crate) fn new(pane: &'a mut Pane) -> Self {
+    pub fn new(pane: &'a mut Pane) -> Self {
         Self { pane }
     }
 
-    pub(crate) fn screen_mut(&mut self) -> &mut crate::screen::Screen {
+    pub fn screen_mut(&mut self) -> &mut crate::screen::Screen {
         self.pane.active_screen_mut()
     }
 
     /// Write data back to the PTY master (response to the application).
-    pub(crate) fn write_back(&self, data: &[u8]) {
+    pub fn write_back(&self, data: &[u8]) {
         // SAFETY: writing to a valid PTY master fd.
         unsafe {
             libc::write(
@@ -1101,7 +1094,7 @@ fn is_wide_codepoint(cp: u32) -> bool {
 }
 
 /// Process VT data for a pane. Call this from the server when PTY data arrives.
-pub(crate) fn process_pane_output(pane: &mut Pane, data: &[u8]) -> Vec<VtAction> {
+pub fn process_pane_output(pane: &mut Pane, data: &[u8]) -> Vec<VtAction> {
     // Split borrow: take the parser out, process, put it back
     let mut parser = std::mem::replace(&mut pane.parser, VtParser::new());
     let mut access = PaneScreenAccess::new(pane);

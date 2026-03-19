@@ -6,7 +6,7 @@ use std::path::Path;
 use crate::sys;
 
 /// Spawn a child process in a new PTY. Returns (master_fd, child_pid).
-pub(crate) fn spawn_shell(
+pub fn spawn_shell(
     sx: u32,
     sy: u32,
     cwd: Option<&str>,

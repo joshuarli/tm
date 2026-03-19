@@ -2,36 +2,36 @@ use crate::grid::{CellContent, Color, Grid};
 
 /// Screen mode bitflags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ScreenMode(pub(crate) u32);
+pub struct ScreenMode(pub u32);
 
 impl ScreenMode {
-    pub(crate) const CURSOR_VISIBLE: u32 = 0x01;
-    pub(crate) const INSERT: u32 = 0x02;
-    pub(crate) const WRAP: u32 = 0x04;
-    pub(crate) const ORIGIN: u32 = 0x08;
-    pub(crate) const MOUSE_BUTTON: u32 = 0x10;
-    pub(crate) const MOUSE_SGR: u32 = 0x20;
-    pub(crate) const MOUSE_ANY: u32 = 0x40;
-    pub(crate) const BRACKETED_PASTE: u32 = 0x80;
-    pub(crate) const FOCUS_EVENTS: u32 = 0x100;
-    pub(crate) const ALT_SCREEN: u32 = 0x200;
-    pub(crate) const SYNCED_OUTPUT: u32 = 0x400;
+    pub const CURSOR_VISIBLE: u32 = 0x01;
+    pub const INSERT: u32 = 0x02;
+    pub const WRAP: u32 = 0x04;
+    pub const ORIGIN: u32 = 0x08;
+    pub const MOUSE_BUTTON: u32 = 0x10;
+    pub const MOUSE_SGR: u32 = 0x20;
+    pub const MOUSE_ANY: u32 = 0x40;
+    pub const BRACKETED_PASTE: u32 = 0x80;
+    pub const FOCUS_EVENTS: u32 = 0x100;
+    pub const ALT_SCREEN: u32 = 0x200;
+    pub const SYNCED_OUTPUT: u32 = 0x400;
 
-    pub(crate) fn has(self, flag: u32) -> bool {
+    pub fn has(self, flag: u32) -> bool {
         self.0 & flag != 0
     }
 
-    pub(crate) fn set(&mut self, flag: u32) {
+    pub fn set(&mut self, flag: u32) {
         self.0 |= flag;
     }
 
-    pub(crate) fn clear(&mut self, flag: u32) {
+    pub fn clear(&mut self, flag: u32) {
         self.0 &= !flag;
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) enum CursorStyle {
+pub enum CursorStyle {
     #[default]
     Block,
     Underline,
@@ -41,27 +41,27 @@ pub(crate) enum CursorStyle {
     BlinkingBeam,
 }
 
-pub(crate) struct Screen {
-    pub(crate) grid: Grid,
-    pub(crate) cx: u32,
-    pub(crate) cy: u32,
-    pub(crate) rupper: u32,
-    pub(crate) rlower: u32,
-    pub(crate) mode: ScreenMode,
-    pub(crate) saved_cx: u32,
-    pub(crate) saved_cy: u32,
-    pub(crate) saved_cell: CellContent,
-    pub(crate) tabs: Vec<bool>,
-    pub(crate) title: String,
-    pub(crate) cursor_style: CursorStyle,
+pub struct Screen {
+    pub grid: Grid,
+    pub cx: u32,
+    pub cy: u32,
+    pub rupper: u32,
+    pub rlower: u32,
+    pub mode: ScreenMode,
+    pub saved_cx: u32,
+    pub saved_cy: u32,
+    pub saved_cell: CellContent,
+    pub tabs: Vec<bool>,
+    pub title: String,
+    pub cursor_style: CursorStyle,
     // Current cell style (used for next character written)
-    pub(crate) cell: CellContent,
+    pub cell: CellContent,
     // Pending wrap: cursor is at the right margin, next printable wraps
-    pub(crate) pending_wrap: bool,
+    pub pending_wrap: bool,
 }
 
 impl Screen {
-    pub(crate) fn new(sx: u32, sy: u32) -> Self {
+    pub fn new(sx: u32, sy: u32) -> Self {
         let mut tabs = vec![false; sx as usize];
         // Default tab stops every 8 columns
         for i in (8..sx).step_by(8) {
@@ -88,16 +88,16 @@ impl Screen {
         }
     }
 
-    pub(crate) fn sx(&self) -> u32 {
+    pub fn sx(&self) -> u32 {
         self.grid.sx
     }
 
-    pub(crate) fn sy(&self) -> u32 {
+    pub fn sy(&self) -> u32 {
         self.grid.sy
     }
 
     /// Put a character at the cursor position, advancing the cursor.
-    pub(crate) fn put_char(&mut self, ch: &[u8], ch_len: u8, ch_width: u8) {
+    pub fn put_char(&mut self, ch: &[u8], ch_len: u8, ch_width: u8) {
         let sx = self.sx();
 
         // Handle pending wrap
@@ -141,7 +141,7 @@ impl Screen {
     }
 
     /// Insert blank cells at cursor, shifting existing cells right.
-    pub(crate) fn insert_cells(&mut self, count: u32) {
+    pub fn insert_cells(&mut self, count: u32) {
         let sx = self.sx();
         if let Some(line) = self.grid.visible_line_mut(self.cy) {
             let cx = self.cx as usize;
@@ -162,12 +162,12 @@ impl Screen {
         }
     }
 
-    pub(crate) fn carriage_return(&mut self) {
+    pub fn carriage_return(&mut self) {
         self.cx = 0;
         self.pending_wrap = false;
     }
 
-    pub(crate) fn linefeed(&mut self) {
+    pub fn linefeed(&mut self) {
         if self.cy == self.rlower {
             self.grid.scroll_up(self.rupper, self.rlower);
         } else if self.cy < self.sy() - 1 {
@@ -175,7 +175,7 @@ impl Screen {
         }
     }
 
-    pub(crate) fn reverse_index(&mut self) {
+    pub fn reverse_index(&mut self) {
         if self.cy == self.rupper {
             self.grid.scroll_down(self.rupper, self.rlower);
         } else if self.cy > 0 {
@@ -184,7 +184,7 @@ impl Screen {
         self.pending_wrap = false;
     }
 
-    pub(crate) fn cursor_up(&mut self, n: u32) {
+    pub fn cursor_up(&mut self, n: u32) {
         let top = if self.cy >= self.rupper && self.cy <= self.rlower {
             self.rupper
         } else {
@@ -194,7 +194,7 @@ impl Screen {
         self.pending_wrap = false;
     }
 
-    pub(crate) fn cursor_down(&mut self, n: u32) {
+    pub fn cursor_down(&mut self, n: u32) {
         let bottom = if self.cy >= self.rupper && self.cy <= self.rlower {
             self.rlower
         } else {
@@ -204,17 +204,17 @@ impl Screen {
         self.pending_wrap = false;
     }
 
-    pub(crate) fn cursor_left(&mut self, n: u32) {
+    pub fn cursor_left(&mut self, n: u32) {
         self.cx = self.cx.saturating_sub(n);
         self.pending_wrap = false;
     }
 
-    pub(crate) fn cursor_right(&mut self, n: u32) {
+    pub fn cursor_right(&mut self, n: u32) {
         self.cx = (self.cx + n).min(self.sx() - 1);
         self.pending_wrap = false;
     }
 
-    pub(crate) fn cursor_to(&mut self, row: u32, col: u32) {
+    pub fn cursor_to(&mut self, row: u32, col: u32) {
         let (row, max_row) = if self.mode.has(ScreenMode::ORIGIN) {
             (row + self.rupper, self.rlower)
         } else {
@@ -225,20 +225,20 @@ impl Screen {
         self.pending_wrap = false;
     }
 
-    pub(crate) fn save_cursor(&mut self) {
+    pub fn save_cursor(&mut self) {
         self.saved_cx = self.cx;
         self.saved_cy = self.cy;
         self.saved_cell = self.cell;
     }
 
-    pub(crate) fn restore_cursor(&mut self) {
+    pub fn restore_cursor(&mut self) {
         self.cx = self.saved_cx.min(self.sx().saturating_sub(1));
         self.cy = self.saved_cy.min(self.sy().saturating_sub(1));
         self.cell = self.saved_cell;
         self.pending_wrap = false;
     }
 
-    pub(crate) fn tab(&mut self) {
+    pub fn tab(&mut self) {
         let sx = self.sx();
         let mut next = self.cx + 1;
         while next < sx {
@@ -251,7 +251,7 @@ impl Screen {
         self.pending_wrap = false;
     }
 
-    pub(crate) fn backspace(&mut self) {
+    pub fn backspace(&mut self) {
         if self.cx > 0 {
             self.cx -= 1;
         }
@@ -259,7 +259,7 @@ impl Screen {
     }
 
     /// Erase in display (ED).
-    pub(crate) fn erase_display(&mut self, mode: u32) {
+    pub fn erase_display(&mut self, mode: u32) {
         let sx = self.sx();
         let sy = self.sy();
         let blank = CellContent::default_with_bg(self.cell.bg);
@@ -299,7 +299,7 @@ impl Screen {
     }
 
     /// Erase in line (EL).
-    pub(crate) fn erase_line(&mut self, mode: u32) {
+    pub fn erase_line(&mut self, mode: u32) {
         let sx = self.sx();
         let blank = CellContent::default_with_bg(self.cell.bg);
         match mode {
@@ -326,7 +326,7 @@ impl Screen {
     }
 
     /// Delete characters at cursor, shifting left.
-    pub(crate) fn delete_chars(&mut self, n: u32) {
+    pub fn delete_chars(&mut self, n: u32) {
         let sx = self.sx();
         if let Some(line) = self.grid.visible_line_mut(self.cy) {
             let cx = self.cx as usize;
@@ -347,7 +347,7 @@ impl Screen {
     }
 
     /// Insert blank lines at cursor row, shifting down.
-    pub(crate) fn insert_lines(&mut self, n: u32) {
+    pub fn insert_lines(&mut self, n: u32) {
         if self.cy < self.rupper || self.cy > self.rlower {
             return;
         }
@@ -357,7 +357,7 @@ impl Screen {
     }
 
     /// Delete lines at cursor row, shifting up.
-    pub(crate) fn delete_lines(&mut self, n: u32) {
+    pub fn delete_lines(&mut self, n: u32) {
         if self.cy < self.rupper || self.cy > self.rlower {
             return;
         }
@@ -366,7 +366,7 @@ impl Screen {
         }
     }
 
-    pub(crate) fn set_scroll_region(&mut self, top: u32, bottom: u32) {
+    pub fn set_scroll_region(&mut self, top: u32, bottom: u32) {
         let sy = self.sy();
         let top = top.min(sy.saturating_sub(2));
         let bottom = bottom.min(sy.saturating_sub(1));
@@ -378,12 +378,12 @@ impl Screen {
         self.cursor_to(0, 0);
     }
 
-    pub(crate) fn reset_scroll_region(&mut self) {
+    pub fn reset_scroll_region(&mut self) {
         self.rupper = 0;
         self.rlower = self.sy().saturating_sub(1);
     }
 
-    pub(crate) fn resize(&mut self, sx: u32, sy: u32) {
+    pub fn resize(&mut self, sx: u32, sy: u32) {
         self.grid.resize(sx, sy);
         self.cx = self.cx.min(sx.saturating_sub(1));
         self.cy = self.cy.min(sy.saturating_sub(1));
@@ -398,7 +398,7 @@ impl Screen {
         }
     }
 
-    pub(crate) fn clear_all(&mut self) {
+    pub fn clear_all(&mut self) {
         self.grid.clear();
         self.cx = 0;
         self.cy = 0;
@@ -408,12 +408,12 @@ impl Screen {
         self.cell = CellContent::default();
     }
 
-    pub(crate) fn mark_all_dirty(&mut self) {
+    pub fn mark_all_dirty(&mut self) {
         self.grid.mark_all_dirty();
     }
 
     /// Erase characters at cursor position (replace with blanks, don't shift).
-    pub(crate) fn erase_chars(&mut self, n: u32) {
+    pub fn erase_chars(&mut self, n: u32) {
         let sx = self.sx();
         let end = (self.cx + n).min(sx);
         let blank = CellContent::default_with_bg(self.cell.bg);
@@ -424,7 +424,7 @@ impl Screen {
 }
 
 impl CellContent {
-    pub(crate) fn default_with_bg(bg: Color) -> Self {
+    pub fn default_with_bg(bg: Color) -> Self {
         let mut c = Self::default();
         c.bg = bg;
         c

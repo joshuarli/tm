@@ -1,68 +1,68 @@
 /// Key code: lower 21 bits = Unicode codepoint or special key, upper bits = modifiers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) struct KeyCode(pub(crate) u32);
+pub struct KeyCode(pub u32);
 
 impl KeyCode {
-    pub(crate) const CTRL: u32 = 1 << 24;
-    pub(crate) const META: u32 = 1 << 25;
-    pub(crate) const SHIFT: u32 = 1 << 26;
+    pub const CTRL: u32 = 1 << 24;
+    pub const META: u32 = 1 << 25;
+    pub const SHIFT: u32 = 1 << 26;
 
     // Special keys (values above Unicode range)
-    pub(crate) const UP: u32 = 0x110000;
-    pub(crate) const DOWN: u32 = 0x110001;
-    pub(crate) const LEFT: u32 = 0x110002;
-    pub(crate) const RIGHT: u32 = 0x110003;
-    pub(crate) const HOME: u32 = 0x110004;
-    pub(crate) const END: u32 = 0x110005;
-    pub(crate) const INSERT: u32 = 0x110006;
-    pub(crate) const DELETE: u32 = 0x110007;
-    pub(crate) const PAGEUP: u32 = 0x110008;
-    pub(crate) const PAGEDOWN: u32 = 0x110009;
-    pub(crate) const F1: u32 = 0x110010;
-    pub(crate) const F2: u32 = 0x110011;
-    pub(crate) const F3: u32 = 0x110012;
-    pub(crate) const F4: u32 = 0x110013;
-    pub(crate) const F5: u32 = 0x110014;
-    pub(crate) const F6: u32 = 0x110015;
-    pub(crate) const F7: u32 = 0x110016;
-    pub(crate) const F8: u32 = 0x110017;
-    pub(crate) const F9: u32 = 0x110018;
-    pub(crate) const F10: u32 = 0x110019;
-    pub(crate) const F11: u32 = 0x11001A;
-    pub(crate) const F12: u32 = 0x11001B;
-    pub(crate) const ESCAPE: u32 = 0x1B;
-    pub(crate) const ENTER: u32 = 0x0D;
-    pub(crate) const TAB: u32 = 0x09;
-    pub(crate) const BACKSPACE: u32 = 0x7F;
+    pub const UP: u32 = 0x110000;
+    pub const DOWN: u32 = 0x110001;
+    pub const LEFT: u32 = 0x110002;
+    pub const RIGHT: u32 = 0x110003;
+    pub const HOME: u32 = 0x110004;
+    pub const END: u32 = 0x110005;
+    pub const INSERT: u32 = 0x110006;
+    pub const DELETE: u32 = 0x110007;
+    pub const PAGEUP: u32 = 0x110008;
+    pub const PAGEDOWN: u32 = 0x110009;
+    pub const F1: u32 = 0x110010;
+    pub const F2: u32 = 0x110011;
+    pub const F3: u32 = 0x110012;
+    pub const F4: u32 = 0x110013;
+    pub const F5: u32 = 0x110014;
+    pub const F6: u32 = 0x110015;
+    pub const F7: u32 = 0x110016;
+    pub const F8: u32 = 0x110017;
+    pub const F9: u32 = 0x110018;
+    pub const F10: u32 = 0x110019;
+    pub const F11: u32 = 0x11001A;
+    pub const F12: u32 = 0x11001B;
+    pub const ESCAPE: u32 = 0x1B;
+    pub const ENTER: u32 = 0x0D;
+    pub const TAB: u32 = 0x09;
+    pub const BACKSPACE: u32 = 0x7F;
 
-    pub(crate) fn char(ch: char) -> Self {
+    pub fn char(ch: char) -> Self {
         Self(ch as u32)
     }
 
-    pub(crate) fn ctrl(ch: char) -> Self {
+    pub fn ctrl(ch: char) -> Self {
         Self((ch as u32) | Self::CTRL)
     }
 
-    pub(crate) fn base(self) -> u32 {
+    pub fn base(self) -> u32 {
         self.0 & 0x1FFFFF
     }
 
-    pub(crate) fn has_ctrl(self) -> bool {
+    pub fn has_ctrl(self) -> bool {
         self.0 & Self::CTRL != 0
     }
 
-    pub(crate) fn has_shift(self) -> bool {
+    pub fn has_shift(self) -> bool {
         self.0 & Self::SHIFT != 0
     }
 
-    pub(crate) fn has_meta(self) -> bool {
+    pub fn has_meta(self) -> bool {
         self.0 & Self::META != 0
     }
 }
 
 /// Mouse event types.
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum MouseEvent {
+pub enum MouseEvent {
     Press {
         button: u8,
         x: u32,
@@ -89,7 +89,7 @@ pub(crate) enum MouseEvent {
 
 /// Parsed input event.
 #[derive(Clone, Debug)]
-pub(crate) enum InputEvent {
+pub enum InputEvent {
     Key(KeyCode),
     Mouse(MouseEvent),
     Paste(Vec<u8>),
@@ -98,7 +98,7 @@ pub(crate) enum InputEvent {
 }
 
 /// Parse raw input bytes into events. Returns events and bytes consumed.
-pub(crate) fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
+pub fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
     let mut events = Vec::new();
     let mut pos = 0;
 
@@ -430,7 +430,7 @@ fn xterm_modifiers(param: u32) -> u32 {
 }
 
 /// Parse a key name from config into a KeyCode.
-pub(crate) fn parse_key_name(name: &str) -> Option<KeyCode> {
+pub fn parse_key_name(name: &str) -> Option<KeyCode> {
     // Handle modifiers
     let (modifiers, base_name) = if let Some(rest) = name.strip_prefix("C-") {
         (KeyCode::CTRL, rest)

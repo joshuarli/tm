@@ -5,7 +5,7 @@ use crate::state::{ClientId, ClientMode, PaneId, State, WindowId};
 use crate::tty::TtyWriter;
 
 /// Render the full screen for a client.
-pub(crate) fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut TtyWriter) {
+pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut TtyWriter) {
     let Some(client) = state.clients.get(&cid) else {
         return;
     };
@@ -421,7 +421,7 @@ fn render_status(
 }
 
 /// Clear dirty flags on all visible cells for a client's current window.
-pub(crate) fn clear_dirty(state: &mut State, cid: ClientId) {
+pub fn clear_dirty(state: &mut State, cid: ClientId) {
     let Some(client) = state.clients.get(&cid) else {
         return;
     };

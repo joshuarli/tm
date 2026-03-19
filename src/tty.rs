@@ -4,7 +4,7 @@ use crate::grid::{CellAttr, CellContent, Color};
 use crate::screen::CursorStyle;
 
 /// Buffered terminal output writer.
-pub(crate) struct TtyWriter {
+pub struct TtyWriter {
     buf: Vec<u8>,
     // Track current attributes to minimize escape sequences
     cur_attr: CellAttr,
@@ -14,7 +14,7 @@ pub(crate) struct TtyWriter {
 }
 
 impl TtyWriter {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             buf: Vec::with_capacity(8192),
             cur_attr: CellAttr::default(),
@@ -24,7 +24,7 @@ impl TtyWriter {
         }
     }
 
-    pub(crate) fn reset_state(&mut self) {
+    pub fn reset_state(&mut self) {
         self.cur_attr = CellAttr::default();
         self.cur_fg = Color::Default;
         self.cur_bg = Color::Default;
@@ -32,17 +32,17 @@ impl TtyWriter {
     }
 
     /// Write raw bytes to the buffer.
-    pub(crate) fn write_raw(&mut self, data: &[u8]) {
+    pub fn write_raw(&mut self, data: &[u8]) {
         self.buf.extend_from_slice(data);
     }
 
     /// Write a string to the buffer.
-    pub(crate) fn write_str(&mut self, s: &str) {
+    pub fn write_str(&mut self, s: &str) {
         self.buf.extend_from_slice(s.as_bytes());
     }
 
     /// Move cursor to (row, col) — 0-based.
-    pub(crate) fn cursor_goto(&mut self, row: u32, col: u32) {
+    pub fn cursor_goto(&mut self, row: u32, col: u32) {
         use std::fmt::Write;
         let mut s = String::new();
         write!(s, "\x1b[{};{}H", row + 1, col + 1).unwrap();
@@ -50,17 +50,17 @@ impl TtyWriter {
     }
 
     /// Hide cursor.
-    pub(crate) fn cursor_hide(&mut self) {
+    pub fn cursor_hide(&mut self) {
         self.write_raw(b"\x1b[?25l");
     }
 
     /// Show cursor.
-    pub(crate) fn cursor_show(&mut self) {
+    pub fn cursor_show(&mut self) {
         self.write_raw(b"\x1b[?25h");
     }
 
     /// Set cursor style.
-    pub(crate) fn cursor_style(&mut self, style: CursorStyle) {
+    pub fn cursor_style(&mut self, style: CursorStyle) {
         let n = match style {
             CursorStyle::BlinkingBlock => 1,
             CursorStyle::Block => 2,
@@ -74,7 +74,7 @@ impl TtyWriter {
     }
 
     /// Reset all attributes.
-    pub(crate) fn reset_attrs(&mut self) {
+    pub fn reset_attrs(&mut self) {
         self.write_raw(b"\x1b[0m");
         self.cur_attr = CellAttr::default();
         self.cur_fg = Color::Default;
@@ -83,7 +83,7 @@ impl TtyWriter {
     }
 
     /// Set attributes and colors to match a cell.
-    pub(crate) fn set_cell_attrs(&mut self, cell: &CellContent) {
+    pub fn set_cell_attrs(&mut self, cell: &CellContent) {
         if cell.attr == self.cur_attr
             && cell.fg == self.cur_fg
             && cell.bg == self.cur_bg
@@ -211,67 +211,67 @@ impl TtyWriter {
     }
 
     /// Clear the entire screen.
-    pub(crate) fn clear_screen(&mut self) {
+    pub fn clear_screen(&mut self) {
         self.write_raw(b"\x1b[2J");
     }
 
     /// Clear to end of line.
-    pub(crate) fn clear_eol(&mut self) {
+    pub fn clear_eol(&mut self) {
         self.write_raw(b"\x1b[K");
     }
 
     /// Enable mouse SGR reporting.
-    pub(crate) fn enable_mouse(&mut self) {
+    pub fn enable_mouse(&mut self) {
         self.write_raw(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h");
     }
 
     /// Disable mouse reporting.
-    pub(crate) fn disable_mouse(&mut self) {
+    pub fn disable_mouse(&mut self) {
         self.write_raw(b"\x1b[?1006l\x1b[?1002l\x1b[?1000l");
     }
 
     /// Enable focus events.
-    pub(crate) fn enable_focus(&mut self) {
+    pub fn enable_focus(&mut self) {
         self.write_raw(b"\x1b[?1004h");
     }
 
     /// Disable focus events.
-    pub(crate) fn disable_focus(&mut self) {
+    pub fn disable_focus(&mut self) {
         self.write_raw(b"\x1b[?1004l");
     }
 
     /// Enter alternate screen.
-    pub(crate) fn enter_alt_screen(&mut self) {
+    pub fn enter_alt_screen(&mut self) {
         self.write_raw(b"\x1b[?1049h");
     }
 
     /// Leave alternate screen.
-    pub(crate) fn leave_alt_screen(&mut self) {
+    pub fn leave_alt_screen(&mut self) {
         self.write_raw(b"\x1b[?1049l");
     }
 
     /// Begin synchronized output.
-    pub(crate) fn sync_begin(&mut self) {
+    pub fn sync_begin(&mut self) {
         self.write_raw(b"\x1b[?2026h");
     }
 
     /// End synchronized output.
-    pub(crate) fn sync_end(&mut self) {
+    pub fn sync_end(&mut self) {
         self.write_raw(b"\x1b[?2026l");
     }
 
     /// Enable bracketed paste.
-    pub(crate) fn enable_bracketed_paste(&mut self) {
+    pub fn enable_bracketed_paste(&mut self) {
         self.write_raw(b"\x1b[?2004h");
     }
 
     /// Disable bracketed paste.
-    pub(crate) fn disable_bracketed_paste(&mut self) {
+    pub fn disable_bracketed_paste(&mut self) {
         self.write_raw(b"\x1b[?2004l");
     }
 
     /// Flush the buffer to a file descriptor.
-    pub(crate) fn flush_to(&mut self, fd: RawFd) -> std::io::Result<()> {
+    pub fn flush_to(&mut self, fd: RawFd) -> std::io::Result<()> {
         if self.buf.is_empty() {
             return Ok(());
         }
@@ -306,12 +306,12 @@ impl TtyWriter {
     }
 
     /// Append buffered data to an output Vec (for client output_buf).
-    pub(crate) fn drain_into(&mut self, dest: &mut Vec<u8>) {
+    pub fn drain_into(&mut self, dest: &mut Vec<u8>) {
         dest.extend_from_slice(&self.buf);
         self.buf.clear();
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 }

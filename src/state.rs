@@ -10,7 +10,7 @@ use crate::vt::VtParser;
 macro_rules! id_type {
     ($name:ident) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-        pub(crate) struct $name(pub(crate) u32);
+        pub struct $name(pub u32);
     };
 }
 
@@ -19,11 +19,11 @@ id_type!(WindowId);
 id_type!(PaneId);
 id_type!(ClientId);
 
-pub(crate) struct State {
-    pub(crate) sessions: HashMap<SessionId, Session>,
-    pub(crate) windows: HashMap<WindowId, Window>,
-    pub(crate) panes: HashMap<PaneId, Pane>,
-    pub(crate) clients: HashMap<ClientId, Client>,
+pub struct State {
+    pub sessions: HashMap<SessionId, Session>,
+    pub windows: HashMap<WindowId, Window>,
+    pub panes: HashMap<PaneId, Pane>,
+    pub clients: HashMap<ClientId, Client>,
 
     next_session: u32,
     next_window: u32,
@@ -32,7 +32,7 @@ pub(crate) struct State {
 }
 
 impl State {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             sessions: HashMap::new(),
             windows: HashMap::new(),
@@ -45,32 +45,32 @@ impl State {
         }
     }
 
-    pub(crate) fn alloc_session_id(&mut self) -> SessionId {
+    pub fn alloc_session_id(&mut self) -> SessionId {
         let id = SessionId(self.next_session);
         self.next_session += 1;
         id
     }
 
-    pub(crate) fn alloc_window_id(&mut self) -> WindowId {
+    pub fn alloc_window_id(&mut self) -> WindowId {
         let id = WindowId(self.next_window);
         self.next_window += 1;
         id
     }
 
-    pub(crate) fn alloc_pane_id(&mut self) -> PaneId {
+    pub fn alloc_pane_id(&mut self) -> PaneId {
         let id = PaneId(self.next_pane);
         self.next_pane += 1;
         id
     }
 
-    pub(crate) fn alloc_client_id(&mut self) -> ClientId {
+    pub fn alloc_client_id(&mut self) -> ClientId {
         let id = ClientId(self.next_client);
         self.next_client += 1;
         id
     }
 
     /// Create a new session with one window containing one pane.
-    pub(crate) fn create_session(
+    pub fn create_session(
         &mut self,
         name: &str,
         pane_id: PaneId,
@@ -120,7 +120,7 @@ impl State {
     }
 
     /// Find a session by name.
-    pub(crate) fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
+    pub fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
         self.sessions
             .values()
             .find(|s| s.name == name)
@@ -128,7 +128,7 @@ impl State {
     }
 
     /// Renumber windows in a session starting from 1.
-    pub(crate) fn renumber_windows(&mut self, sid: SessionId) {
+    pub fn renumber_windows(&mut self, sid: SessionId) {
         let Some(session) = self.sessions.get(&sid) else {
             return;
         };
@@ -141,7 +141,7 @@ impl State {
     }
 
     /// Get the active pane for a client.
-    pub(crate) fn active_pane_for_client(&self, cid: ClientId) -> Option<PaneId> {
+    pub fn active_pane_for_client(&self, cid: ClientId) -> Option<PaneId> {
         let client = self.clients.get(&cid)?;
         let session = self.sessions.get(&client.session)?;
         let window = self.windows.get(&session.active_window)?;
@@ -149,53 +149,53 @@ impl State {
     }
 
     /// Get the active window for a client.
-    pub(crate) fn active_window_for_client(&self, cid: ClientId) -> Option<WindowId> {
+    pub fn active_window_for_client(&self, cid: ClientId) -> Option<WindowId> {
         let client = self.clients.get(&cid)?;
         let session = self.sessions.get(&client.session)?;
         Some(session.active_window)
     }
 }
 
-pub(crate) struct Session {
-    pub(crate) id: SessionId,
-    pub(crate) name: String,
-    pub(crate) windows: Vec<WindowId>,
-    pub(crate) active_window: WindowId,
-    pub(crate) next_window_idx: u32,
+pub struct Session {
+    pub id: SessionId,
+    pub name: String,
+    pub windows: Vec<WindowId>,
+    pub active_window: WindowId,
+    pub next_window_idx: u32,
 }
 
-pub(crate) struct Window {
-    pub(crate) id: WindowId,
-    pub(crate) idx: u32,
-    pub(crate) name: String,
-    pub(crate) active_pane: PaneId,
-    pub(crate) panes: Vec<PaneId>,
-    pub(crate) sx: u32,
-    pub(crate) sy: u32,
-    pub(crate) zoomed: Option<PaneId>,
-    pub(crate) session: SessionId,
-    pub(crate) layout: LayoutNode,
+pub struct Window {
+    pub id: WindowId,
+    pub idx: u32,
+    pub name: String,
+    pub active_pane: PaneId,
+    pub panes: Vec<PaneId>,
+    pub sx: u32,
+    pub sy: u32,
+    pub zoomed: Option<PaneId>,
+    pub session: SessionId,
+    pub layout: LayoutNode,
 }
 
-pub(crate) struct Pane {
-    pub(crate) id: PaneId,
-    pub(crate) pty_master: RawFd,
-    pub(crate) pid: libc::pid_t,
-    pub(crate) screen: Screen,
-    pub(crate) alt_screen: Screen,
-    pub(crate) parser: VtParser,
-    pub(crate) sx: u32,
-    pub(crate) sy: u32,
-    pub(crate) xoff: u32,
-    pub(crate) yoff: u32,
-    pub(crate) flags: PaneFlags,
-    pub(crate) cwd: Option<String>,
-    pub(crate) window: WindowId,
-    pub(crate) using_alt: bool,
+pub struct Pane {
+    pub id: PaneId,
+    pub pty_master: RawFd,
+    pub pid: libc::pid_t,
+    pub screen: Screen,
+    pub alt_screen: Screen,
+    pub parser: VtParser,
+    pub sx: u32,
+    pub sy: u32,
+    pub xoff: u32,
+    pub yoff: u32,
+    pub flags: PaneFlags,
+    pub cwd: Option<String>,
+    pub window: WindowId,
+    pub using_alt: bool,
 }
 
 impl Pane {
-    pub(crate) fn new(id: PaneId, pty_master: RawFd, pid: libc::pid_t, sx: u32, sy: u32) -> Self {
+    pub fn new(id: PaneId, pty_master: RawFd, pid: libc::pid_t, sx: u32, sy: u32) -> Self {
         Self {
             id,
             pty_master,
@@ -214,7 +214,7 @@ impl Pane {
         }
     }
 
-    pub(crate) fn active_screen(&self) -> &Screen {
+    pub fn active_screen(&self) -> &Screen {
         if self.using_alt {
             &self.alt_screen
         } else {
@@ -222,7 +222,7 @@ impl Pane {
         }
     }
 
-    pub(crate) fn active_screen_mut(&mut self) -> &mut Screen {
+    pub fn active_screen_mut(&mut self) -> &mut Screen {
         if self.using_alt {
             &mut self.alt_screen
         } else {
@@ -230,33 +230,33 @@ impl Pane {
         }
     }
 
-    pub(crate) fn enter_alt_screen(&mut self) {
+    pub fn enter_alt_screen(&mut self) {
         if !self.using_alt {
             self.using_alt = true;
             self.alt_screen.clear_all();
         }
     }
 
-    pub(crate) fn exit_alt_screen(&mut self) {
+    pub fn exit_alt_screen(&mut self) {
         if self.using_alt {
             self.using_alt = false;
             self.flags |= PaneFlags::REDRAW;
         }
     }
 
-    pub(crate) fn is_alt_screen(&self) -> bool {
+    pub fn is_alt_screen(&self) -> bool {
         self.using_alt
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PaneFlags(pub(crate) u32);
+pub struct PaneFlags(pub u32);
 
 impl PaneFlags {
-    pub(crate) const NONE: Self = Self(0);
-    pub(crate) const REDRAW: Self = Self(0x1);
+    pub const NONE: Self = Self(0);
+    pub const REDRAW: Self = Self(0x1);
 
-    pub(crate) fn contains(self, other: Self) -> bool {
+    pub fn contains(self, other: Self) -> bool {
         self.0 & other.0 == other.0
     }
 }
@@ -275,18 +275,18 @@ impl std::ops::BitAndAssign for PaneFlags {
 
 /// Click-drag text selection.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Selection {
-    pub(crate) pane: PaneId,
+pub struct Selection {
+    pub pane: PaneId,
     /// Start and end in absolute grid coordinates (col, abs_row).
-    pub(crate) start_col: u32,
-    pub(crate) start_row: u32,
-    pub(crate) end_col: u32,
-    pub(crate) end_row: u32,
+    pub start_col: u32,
+    pub start_row: u32,
+    pub end_col: u32,
+    pub end_row: u32,
 }
 
 impl Selection {
     /// Return (start, end) normalized so start <= end.
-    pub(crate) fn ordered(&self) -> ((u32, u32), (u32, u32)) {
+    pub fn ordered(&self) -> ((u32, u32), (u32, u32)) {
         let s = (self.start_col, self.start_row);
         let e = (self.end_col, self.end_row);
         if s.1 < e.1 || (s.1 == e.1 && s.0 <= e.0) {
@@ -298,34 +298,34 @@ impl Selection {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ClientMode {
+pub enum ClientMode {
     Normal,
     CopyMode,
     CommandPrompt,
 }
 
-pub(crate) struct Client {
-    pub(crate) id: ClientId,
-    pub(crate) socket_fd: RawFd,
-    pub(crate) tty_fd: RawFd,
-    pub(crate) sx: u32,
-    pub(crate) sy: u32,
-    pub(crate) session: SessionId,
-    pub(crate) prefix_active: bool,
-    pub(crate) repeat_deadline: Option<Instant>,
-    pub(crate) input_buf: Vec<u8>,
-    pub(crate) output_buf: Vec<u8>,
-    pub(crate) mode: ClientMode,
-    pub(crate) copy_oy: u32,      // scroll offset in copy mode (lines from bottom)
-    pub(crate) copy_pane: PaneId, // which pane is being scrolled
-    pub(crate) sel: Option<Selection>, // click-drag text selection
-    pub(crate) status_message: Option<(String, Instant)>,
-    pub(crate) prompt_buf: Option<String>,
-    pub(crate) prompt_action: Option<PromptAction>,
+pub struct Client {
+    pub id: ClientId,
+    pub socket_fd: RawFd,
+    pub tty_fd: RawFd,
+    pub sx: u32,
+    pub sy: u32,
+    pub session: SessionId,
+    pub prefix_active: bool,
+    pub repeat_deadline: Option<Instant>,
+    pub input_buf: Vec<u8>,
+    pub output_buf: Vec<u8>,
+    pub mode: ClientMode,
+    pub copy_oy: u32,      // scroll offset in copy mode (lines from bottom)
+    pub copy_pane: PaneId, // which pane is being scrolled
+    pub sel: Option<Selection>, // click-drag text selection
+    pub status_message: Option<(String, Instant)>,
+    pub prompt_buf: Option<String>,
+    pub prompt_action: Option<PromptAction>,
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum PromptAction {
+pub enum PromptAction {
     NewWindow,
     RenameWindow,
     Command,
@@ -333,7 +333,7 @@ pub(crate) enum PromptAction {
 }
 
 impl Client {
-    pub(crate) fn new(
+    pub fn new(
         id: ClientId,
         socket_fd: RawFd,
         tty_fd: RawFd,

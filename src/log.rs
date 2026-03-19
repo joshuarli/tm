@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
 
-pub(crate) fn init() {
+pub fn init() {
     if std::env::var_os("TM_LOG").is_none() {
         return;
     }
@@ -29,17 +29,7 @@ fn log_path() -> std::path::PathBuf {
     std::path::PathBuf::from(format!("/tmp/tm-{uid}/tm.log"))
 }
 
-#[allow(unused_macros)]
-macro_rules! tm_log {
-    ($($arg:tt)*) => {
-        $crate::log::_log(&format!($($arg)*))
-    };
-}
-
-#[allow(unused_imports)]
-pub(crate) use tm_log;
-
-pub(crate) fn _log(msg: &str) {
+pub fn log(msg: &str) {
     if let Ok(mut guard) = LOG_FILE.lock() {
         if let Some(f) = guard.as_mut() {
             let _ = writeln!(f, "{msg}");

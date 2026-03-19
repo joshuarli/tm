@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 /// Color representation for cells.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) enum Color {
+pub enum Color {
     #[default]
     Default,
     Palette(u8),
@@ -11,50 +11,50 @@ pub(crate) enum Color {
 
 /// Cell attributes as bitflags.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub(crate) struct CellAttr(pub(crate) u16);
+pub struct CellAttr(pub u16);
 
 impl CellAttr {
-    pub(crate) const BOLD: u16 = 0x01;
-    pub(crate) const DIM: u16 = 0x02;
-    pub(crate) const ITALIC: u16 = 0x04;
-    pub(crate) const UNDERLINE: u16 = 0x08;
-    pub(crate) const REVERSE: u16 = 0x10;
-    pub(crate) const STRIKE: u16 = 0x20;
-    pub(crate) const INVISIBLE: u16 = 0x40;
-    pub(crate) const CURLY_UNDERLINE: u16 = 0x80;
-    pub(crate) const DOUBLE_UNDERLINE: u16 = 0x100;
-    pub(crate) const DOTTED_UNDERLINE: u16 = 0x200;
-    pub(crate) const DASHED_UNDERLINE: u16 = 0x400;
+    pub const BOLD: u16 = 0x01;
+    pub const DIM: u16 = 0x02;
+    pub const ITALIC: u16 = 0x04;
+    pub const UNDERLINE: u16 = 0x08;
+    pub const REVERSE: u16 = 0x10;
+    pub const STRIKE: u16 = 0x20;
+    pub const INVISIBLE: u16 = 0x40;
+    pub const CURLY_UNDERLINE: u16 = 0x80;
+    pub const DOUBLE_UNDERLINE: u16 = 0x100;
+    pub const DOTTED_UNDERLINE: u16 = 0x200;
+    pub const DASHED_UNDERLINE: u16 = 0x400;
 
-    pub(crate) fn has(self, flag: u16) -> bool {
+    pub fn has(self, flag: u16) -> bool {
         self.0 & flag != 0
     }
 
-    pub(crate) fn set(&mut self, flag: u16) {
+    pub fn set(&mut self, flag: u16) {
         self.0 |= flag;
     }
 
-    pub(crate) fn clear(&mut self, flag: u16) {
+    pub fn clear(&mut self, flag: u16) {
         self.0 &= !flag;
     }
 
-    pub(crate) fn basic(self) -> u8 {
+    pub fn basic(self) -> u8 {
         (self.0 & 0xFF) as u8
     }
 
-    pub(crate) fn fits_compact(self) -> bool {
+    pub fn fits_compact(self) -> bool {
         self.0 <= 0xFF
     }
 }
 
 /// Compact cell — 5 bytes. Covers ASCII with 256-color palette.
 #[derive(Clone, Copy)]
-pub(crate) struct CompactCell {
-    pub(crate) ch: u8,    // ASCII byte, or 0xFF → extended
-    pub(crate) attr: u8,  // basic attributes
-    pub(crate) fg: u8,    // palette index
-    pub(crate) bg: u8,    // palette index
-    pub(crate) flags: u8, // EXTENDED | DIRTY | WIDE_CONTINUATION
+pub struct CompactCell {
+    pub ch: u8,    // ASCII byte, or 0xFF → extended
+    pub attr: u8,  // basic attributes
+    pub fg: u8,    // palette index
+    pub bg: u8,    // palette index
+    pub flags: u8, // EXTENDED | DIRTY | WIDE_CONTINUATION
 }
 
 impl Default for CompactCell {
@@ -70,71 +70,71 @@ impl Default for CompactCell {
 }
 
 impl CompactCell {
-    pub(crate) const EXTENDED: u8 = 0x01;
-    pub(crate) const DIRTY: u8 = 0x02;
-    pub(crate) const WIDE_CONT: u8 = 0x04;
+    pub const EXTENDED: u8 = 0x01;
+    pub const DIRTY: u8 = 0x02;
+    pub const WIDE_CONT: u8 = 0x04;
 
-    pub(crate) fn is_extended(self) -> bool {
+    pub fn is_extended(self) -> bool {
         self.flags & Self::EXTENDED != 0
     }
 
-    pub(crate) fn is_dirty(self) -> bool {
+    pub fn is_dirty(self) -> bool {
         self.flags & Self::DIRTY != 0
     }
 
-    pub(crate) fn set_dirty(&mut self) {
+    pub fn set_dirty(&mut self) {
         self.flags |= Self::DIRTY;
     }
 
-    pub(crate) fn clear_dirty(&mut self) {
+    pub fn clear_dirty(&mut self) {
         self.flags &= !Self::DIRTY;
     }
 
     /// Get the extended index when ch == 0xFF. The attr/fg/bg fields store a u24 index.
-    pub(crate) fn extended_idx(self) -> usize {
+    pub fn extended_idx(self) -> usize {
         ((self.attr as usize) << 16) | ((self.fg as usize) << 8) | (self.bg as usize)
     }
 }
 
 /// Extended cell — for Unicode, RGB colors, styled underlines.
 #[derive(Clone, Copy, Default)]
-pub(crate) struct ExtendedCell {
-    pub(crate) ch: [u8; 8],
-    pub(crate) ch_len: u8,
-    pub(crate) ch_width: u8, // display width (1 or 2)
-    pub(crate) attr: CellAttr,
-    pub(crate) fg: Color,
-    pub(crate) bg: Color,
-    pub(crate) us: Color, // underline color
+pub struct ExtendedCell {
+    pub ch: [u8; 8],
+    pub ch_len: u8,
+    pub ch_width: u8, // display width (1 or 2)
+    pub attr: CellAttr,
+    pub fg: Color,
+    pub bg: Color,
+    pub us: Color, // underline color
 }
 
 impl ExtendedCell {
-    pub(crate) fn ch_str(&self) -> &str {
+    pub fn ch_str(&self) -> &str {
         std::str::from_utf8(&self.ch[..self.ch_len as usize]).unwrap_or(" ")
     }
 }
 
 /// Line flags.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LineFlags(pub(crate) u8);
+pub struct LineFlags(pub u8);
 
 impl LineFlags {
-    pub(crate) const WRAPPED: u8 = 0x01;
+    pub const WRAPPED: u8 = 0x01;
 
-    pub(crate) fn has(self, flag: u8) -> bool {
+    pub fn has(self, flag: u8) -> bool {
         self.0 & flag != 0
     }
 }
 
 /// A single line in the grid.
-pub(crate) struct GridLine {
-    pub(crate) compact: Vec<CompactCell>,
-    pub(crate) extended: Vec<ExtendedCell>,
-    pub(crate) flags: LineFlags,
+pub struct GridLine {
+    pub compact: Vec<CompactCell>,
+    pub extended: Vec<ExtendedCell>,
+    pub flags: LineFlags,
 }
 
 impl GridLine {
-    pub(crate) fn new(width: u32) -> Self {
+    pub fn new(width: u32) -> Self {
         Self {
             compact: vec![CompactCell::default(); width as usize],
             extended: Vec::new(),
@@ -143,7 +143,7 @@ impl GridLine {
     }
 
     /// Set a cell from a CellContent description. Marks the cell dirty.
-    pub(crate) fn set_cell(&mut self, col: u32, content: &CellContent) {
+    pub fn set_cell(&mut self, col: u32, content: &CellContent) {
         let col = col as usize;
         if col >= self.compact.len() {
             return;
@@ -206,7 +206,7 @@ impl GridLine {
     }
 
     /// Get a resolved cell at a column.
-    pub(crate) fn get_cell(&self, col: u32) -> CellContent {
+    pub fn get_cell(&self, col: u32) -> CellContent {
         let col = col as usize;
         if col >= self.compact.len() {
             return CellContent::default();
@@ -251,7 +251,7 @@ impl GridLine {
     }
 
     /// Clear cells from `start` to `end` (exclusive).
-    pub(crate) fn clear_range(&mut self, start: u32, end: u32, content: &CellContent) {
+    pub fn clear_range(&mut self, start: u32, end: u32, content: &CellContent) {
         let start = start as usize;
         let end = (end as usize).min(self.compact.len());
         for col in start..end {
@@ -271,7 +271,7 @@ impl GridLine {
     }
 
     /// Mark all cells dirty.
-    pub(crate) fn mark_dirty(&mut self) {
+    pub fn mark_dirty(&mut self) {
         for c in &mut self.compact {
             c.flags |= CompactCell::DIRTY;
         }
@@ -279,7 +279,7 @@ impl GridLine {
 
     /// Resize this line to a new width. Only grows — never truncates existing
     /// content, so data is preserved when a pane shrinks then expands.
-    pub(crate) fn resize(&mut self, new_width: u32) {
+    pub fn resize(&mut self, new_width: u32) {
         let new_width = new_width as usize;
         if new_width > self.compact.len() {
             self.compact
@@ -292,14 +292,14 @@ impl GridLine {
 
 /// Resolved cell content used for get/set operations.
 #[derive(Clone, Copy)]
-pub(crate) struct CellContent {
-    pub(crate) ch: [u8; 8],
-    pub(crate) ch_len: u8,
-    pub(crate) ch_width: u8,
-    pub(crate) attr: CellAttr,
-    pub(crate) fg: Color,
-    pub(crate) bg: Color,
-    pub(crate) us: Color,
+pub struct CellContent {
+    pub ch: [u8; 8],
+    pub ch_len: u8,
+    pub ch_width: u8,
+    pub attr: CellAttr,
+    pub fg: Color,
+    pub bg: Color,
+    pub us: Color,
 }
 
 impl Default for CellContent {
@@ -321,11 +321,11 @@ impl Default for CellContent {
 }
 
 impl CellContent {
-    pub(crate) fn ch_str(&self) -> &str {
+    pub fn ch_str(&self) -> &str {
         std::str::from_utf8(&self.ch[..self.ch_len as usize]).unwrap_or(" ")
     }
 
-    pub(crate) fn from_ascii(ch: u8) -> Self {
+    pub fn from_ascii(ch: u8) -> Self {
         let mut c = Self::default();
         c.ch[0] = ch;
         c
@@ -333,15 +333,15 @@ impl CellContent {
 }
 
 /// The grid: ring buffer of lines with visible area + scrollback history.
-pub(crate) struct Grid {
-    pub(crate) lines: VecDeque<GridLine>,
-    pub(crate) sx: u32,
-    pub(crate) sy: u32,
-    pub(crate) hlimit: u32,
+pub struct Grid {
+    pub lines: VecDeque<GridLine>,
+    pub sx: u32,
+    pub sy: u32,
+    pub hlimit: u32,
 }
 
 impl Grid {
-    pub(crate) fn new(sx: u32, sy: u32, hlimit: u32) -> Self {
+    pub fn new(sx: u32, sy: u32, hlimit: u32) -> Self {
         let mut lines = VecDeque::with_capacity(sy as usize);
         for _ in 0..sy {
             lines.push_back(GridLine::new(sx));
@@ -355,35 +355,35 @@ impl Grid {
     }
 
     /// Number of history lines (lines above the visible area).
-    pub(crate) fn hsize(&self) -> u32 {
+    pub fn hsize(&self) -> u32 {
         self.lines.len().saturating_sub(self.sy as usize) as u32
     }
 
     /// Get a line by absolute index (0 = oldest history line).
-    pub(crate) fn line(&self, idx: u32) -> Option<&GridLine> {
+    pub fn line(&self, idx: u32) -> Option<&GridLine> {
         self.lines.get(idx as usize)
     }
 
     /// Get a mutable line by absolute index.
-    pub(crate) fn line_mut(&mut self, idx: u32) -> Option<&mut GridLine> {
+    pub fn line_mut(&mut self, idx: u32) -> Option<&mut GridLine> {
         self.lines.get_mut(idx as usize)
     }
 
     /// Get a visible line (0 = top of visible area).
-    pub(crate) fn visible_line(&self, row: u32) -> Option<&GridLine> {
+    pub fn visible_line(&self, row: u32) -> Option<&GridLine> {
         let abs = self.hsize() + row;
         self.line(abs)
     }
 
     /// Get a mutable visible line.
-    pub(crate) fn visible_line_mut(&mut self, row: u32) -> Option<&mut GridLine> {
+    pub fn visible_line_mut(&mut self, row: u32) -> Option<&mut GridLine> {
         let abs = self.hsize() + row;
         self.line_mut(abs)
     }
 
     /// Scroll up: move the top visible line into history, add a new blank line at bottom.
     /// If we exceed hlimit, drop the oldest history line.
-    pub(crate) fn scroll_up(&mut self, top: u32, bottom: u32) {
+    pub fn scroll_up(&mut self, top: u32, bottom: u32) {
         // If this is a full-screen scroll (top=0), the top line goes to history
         if top == 0 && bottom == self.sy.saturating_sub(1) {
             self.lines.push_back(GridLine::new(self.sx));
@@ -420,7 +420,7 @@ impl Grid {
     }
 
     /// Scroll down: insert a blank line at top of region, remove line at bottom.
-    pub(crate) fn scroll_down(&mut self, top: u32, bottom: u32) {
+    pub fn scroll_down(&mut self, top: u32, bottom: u32) {
         let hsize = self.hsize();
         let abs_top = hsize + top;
         let abs_bottom = hsize + bottom;
@@ -440,7 +440,7 @@ impl Grid {
 
     /// Resize the grid to new dimensions with reflow.
     /// Lines marked WRAPPED are joined and re-split at the new width.
-    pub(crate) fn resize(&mut self, new_sx: u32, new_sy: u32) {
+    pub fn resize(&mut self, new_sx: u32, new_sy: u32) {
         if new_sx != self.sx && new_sx > 0 {
             self.reflow(new_sx);
         } else {
@@ -534,7 +534,7 @@ impl Grid {
     }
 
     /// Clear all content.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.lines.clear();
         for _ in 0..self.sy {
             self.lines.push_back(GridLine::new(self.sx));
@@ -542,7 +542,7 @@ impl Grid {
     }
 
     /// Mark all visible lines dirty.
-    pub(crate) fn mark_all_dirty(&mut self) {
+    pub fn mark_all_dirty(&mut self) {
         let hsize = self.hsize();
         for row in 0..self.sy {
             let abs = (hsize + row) as usize;
@@ -941,4 +941,5 @@ mod tests {
         }
         assert!(!row.flags.has(LineFlags::WRAPPED));
     }
+
 }

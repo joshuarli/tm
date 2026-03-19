@@ -5,7 +5,7 @@ use crate::keys::{InputEvent, KeyCode, MouseEvent};
 use crate::state::{ClientId, ClientMode, PaneId, PromptAction, State, WindowId};
 
 /// Result of processing input for a client.
-pub(crate) enum InputResult {
+pub enum InputResult {
     /// No action needed.
     None,
     /// Data to write to the active pane's PTY.
@@ -23,7 +23,7 @@ pub(crate) enum InputResult {
 }
 
 /// Process an input event for a client. Returns what action to take.
-pub(crate) fn process_input(
+pub fn process_input(
     state: &mut State,
     config: &Config,
     cid: ClientId,
@@ -362,7 +362,7 @@ fn swap_window(state: &mut State, cid: ClientId, delta: i32) {
     state.renumber_windows(sid);
 }
 
-pub(crate) fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir) -> Option<PaneId> {
+pub fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir) -> Option<PaneId> {
     let wid = state.active_window_for_client(cid)?;
     let pid = state.active_pane_for_client(cid)?;
 
@@ -396,7 +396,7 @@ pub(crate) fn split_pane(state: &mut State, cid: ClientId, dir: crate::layout::S
     Some(new_pid)
 }
 
-pub(crate) fn recalc_layout(state: &mut State, wid: WindowId) {
+pub fn recalc_layout(state: &mut State, wid: WindowId) {
     let Some(window) = state.windows.get(&wid) else {
         return;
     };
@@ -451,7 +451,7 @@ fn toggle_zoom(state: &mut State, cid: ClientId) {
     recalc_layout_or_zoom(state, wid);
 }
 
-pub(crate) fn recalc_layout_or_zoom(state: &mut State, wid: WindowId) {
+pub fn recalc_layout_or_zoom(state: &mut State, wid: WindowId) {
     let Some(window) = state.windows.get(&wid) else {
         return;
     };

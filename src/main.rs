@@ -100,7 +100,7 @@ fn start_or_connect(msg_type: u16, session_name: &str) -> Result<()> {
         crate::log::init();
 
         if let Err(e) = server::run_server_with_client(server_end) {
-            crate::log::_log(&format!("server error: {e:#}"));
+            crate::log::log(&format!("server error: {e:#}"));
         }
         std::process::exit(0);
     }

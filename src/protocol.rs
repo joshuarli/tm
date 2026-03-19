@@ -2,31 +2,31 @@ use std::io;
 use std::os::unix::io::RawFd;
 
 // Message types (u16)
-pub(crate) const MSG_IDENTIFY: u16 = 1;
-pub(crate) const MSG_INPUT: u16 = 2;
-pub(crate) const MSG_RESIZE: u16 = 3;
-pub(crate) const MSG_DETACH: u16 = 4;
-pub(crate) const MSG_NEW_SESSION: u16 = 10;
-pub(crate) const MSG_ATTACH: u16 = 11;
-pub(crate) const MSG_LIST: u16 = 12;
-pub(crate) const MSG_LIST_RESPONSE: u16 = 13;
-pub(crate) const MSG_KILL_SESSION: u16 = 14;
-pub(crate) const MSG_EXIT: u16 = 15;
-pub(crate) const MSG_ERROR: u16 = 16;
+pub const MSG_IDENTIFY: u16 = 1;
+pub const MSG_INPUT: u16 = 2;
+pub const MSG_RESIZE: u16 = 3;
+pub const MSG_DETACH: u16 = 4;
+pub const MSG_NEW_SESSION: u16 = 10;
+pub const MSG_ATTACH: u16 = 11;
+pub const MSG_LIST: u16 = 12;
+pub const MSG_LIST_RESPONSE: u16 = 13;
+pub const MSG_KILL_SESSION: u16 = 14;
+pub const MSG_EXIT: u16 = 15;
+pub const MSG_ERROR: u16 = 16;
 
 /// Wire format: [u32 length][u16 type][payload]
 /// length includes the type field but not itself.
-pub(crate) struct Message {
-    pub(crate) msg_type: u16,
-    pub(crate) payload: Vec<u8>,
+pub struct Message {
+    pub msg_type: u16,
+    pub payload: Vec<u8>,
 }
 
 impl Message {
-    pub(crate) fn new(msg_type: u16, payload: Vec<u8>) -> Self {
+    pub fn new(msg_type: u16, payload: Vec<u8>) -> Self {
         Self { msg_type, payload }
     }
 
-    pub(crate) fn empty(msg_type: u16) -> Self {
+    pub fn empty(msg_type: u16) -> Self {
         Self {
             msg_type,
             payload: Vec::new(),
@@ -34,7 +34,7 @@ impl Message {
     }
 
     /// Serialize to wire format.
-    pub(crate) fn encode(&self) -> Vec<u8> {
+    pub fn encode(&self) -> Vec<u8> {
         let len = (2 + self.payload.len()) as u32;
         let mut buf = Vec::with_capacity(4 + len as usize);
         buf.extend_from_slice(&len.to_ne_bytes());
@@ -44,7 +44,7 @@ impl Message {
     }
 
     /// Try to decode a message from a buffer. Returns (message, bytes_consumed) or None.
-    pub(crate) fn decode(buf: &[u8]) -> Option<(Self, usize)> {
+    pub fn decode(buf: &[u8]) -> Option<(Self, usize)> {
         if buf.len() < 4 {
             return None;
         }
@@ -62,7 +62,7 @@ impl Message {
 }
 
 // Identify message payload: session_name (null-terminated string) + sx(u32) + sy(u32)
-pub(crate) fn encode_identify(session_name: &str, sx: u32, sy: u32) -> Vec<u8> {
+pub fn encode_identify(session_name: &str, sx: u32, sy: u32) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.extend_from_slice(session_name.as_bytes());
     buf.push(0);
@@ -71,7 +71,7 @@ pub(crate) fn encode_identify(session_name: &str, sx: u32, sy: u32) -> Vec<u8> {
     buf
 }
 
-pub(crate) fn decode_identify(payload: &[u8]) -> Option<(String, u32, u32)> {
+pub fn decode_identify(payload: &[u8]) -> Option<(String, u32, u32)> {
     let nul = payload.iter().position(|&b| b == 0)?;
     let name = String::from_utf8_lossy(&payload[..nul]).into_owned();
     let rest = &payload[nul + 1..];
@@ -83,14 +83,14 @@ pub(crate) fn decode_identify(payload: &[u8]) -> Option<(String, u32, u32)> {
     Some((name, sx, sy))
 }
 
-pub(crate) fn encode_resize(sx: u32, sy: u32) -> Vec<u8> {
+pub fn encode_resize(sx: u32, sy: u32) -> Vec<u8> {
     let mut buf = Vec::with_capacity(8);
     buf.extend_from_slice(&sx.to_ne_bytes());
     buf.extend_from_slice(&sy.to_ne_bytes());
     buf
 }
 
-pub(crate) fn decode_resize(payload: &[u8]) -> Option<(u32, u32)> {
+pub fn decode_resize(payload: &[u8]) -> Option<(u32, u32)> {
     if payload.len() < 8 {
         return None;
     }
@@ -107,7 +107,7 @@ struct CmsgFd {
 }
 
 /// Send a file descriptor over a Unix socket using SCM_RIGHTS.
-pub(crate) fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
+pub fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
     use std::mem;
 
     let mut data = [0u8; 1];
@@ -156,7 +156,7 @@ pub(crate) fn send_fd(sock: RawFd, fd: RawFd) -> io::Result<()> {
 
 /// Receive an optional file descriptor from a Unix socket using SCM_RIGHTS.
 /// Returns Ok(Some(fd)) if an fd was sent, Ok(None) if just a plain byte.
-pub(crate) fn recv_fd(sock: RawFd) -> io::Result<Option<RawFd>> {
+pub fn recv_fd(sock: RawFd) -> io::Result<Option<RawFd>> {
     use std::mem;
 
     let mut data = [0u8; 1];
@@ -328,7 +328,7 @@ mod tests {
 }
 
 /// Get the socket path.
-pub(crate) fn socket_path() -> std::path::PathBuf {
+pub fn socket_path() -> std::path::PathBuf {
     if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") {
         return std::path::PathBuf::from(dir).join("tm/default");
     }

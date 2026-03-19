@@ -1,13 +1,13 @@
 use crate::state::PaneId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SplitDir {
+pub enum SplitDir {
     Horizontal, // children side-by-side (columns)
     Vertical,   // children stacked (rows)
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum LayoutNode {
+pub enum LayoutNode {
     Pane(PaneId),
     Split {
         dir: SplitDir,
@@ -17,17 +17,17 @@ pub(crate) enum LayoutNode {
 
 /// Calculated position and size for a pane.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct PaneGeometry {
-    pub(crate) id: PaneId,
-    pub(crate) xoff: u32,
-    pub(crate) yoff: u32,
-    pub(crate) sx: u32,
-    pub(crate) sy: u32,
+pub struct PaneGeometry {
+    pub id: PaneId,
+    pub xoff: u32,
+    pub yoff: u32,
+    pub sx: u32,
+    pub sy: u32,
 }
 
 impl LayoutNode {
     /// Calculate positions and sizes for all panes in this layout tree.
-    pub(crate) fn calculate(&self, xoff: u32, yoff: u32, sx: u32, sy: u32) -> Vec<PaneGeometry> {
+    pub fn calculate(&self, xoff: u32, yoff: u32, sx: u32, sy: u32) -> Vec<PaneGeometry> {
         let mut result = Vec::new();
         self.calculate_inner(xoff, yoff, sx, sy, &mut result);
         result
@@ -88,7 +88,7 @@ impl LayoutNode {
     }
 
     /// Find and remove a pane from the layout tree. Returns true if found.
-    pub(crate) fn remove_pane(&mut self, target: PaneId) -> bool {
+    pub fn remove_pane(&mut self, target: PaneId) -> bool {
         match self {
             LayoutNode::Pane(id) => *id == target,
             LayoutNode::Split { children, .. } => {
@@ -113,7 +113,7 @@ impl LayoutNode {
     }
 
     /// Collapse single-child splits after a removal.
-    pub(crate) fn simplify(&mut self) {
+    pub fn simplify(&mut self) {
         if let LayoutNode::Split { children, .. } = self {
             // Recursively simplify children first
             for child in children.iter_mut() {
@@ -127,7 +127,7 @@ impl LayoutNode {
     }
 
     /// Split a pane. Returns the new layout with the added pane.
-    pub(crate) fn split_pane(
+    pub fn split_pane(
         &mut self,
         target: PaneId,
         new_pane: PaneId,
@@ -167,7 +167,7 @@ impl LayoutNode {
     }
 
     /// Count the number of panes in this layout.
-    pub(crate) fn pane_count(&self) -> usize {
+    pub fn pane_count(&self) -> usize {
         match self {
             LayoutNode::Pane(_) => 1,
             LayoutNode::Split { children, .. } => children.iter().map(|c| c.pane_count()).sum(),
@@ -175,7 +175,7 @@ impl LayoutNode {
     }
 
     /// Get all pane IDs in order.
-    pub(crate) fn pane_ids(&self) -> Vec<PaneId> {
+    pub fn pane_ids(&self) -> Vec<PaneId> {
         let mut ids = Vec::new();
         self.collect_pane_ids(&mut ids);
         ids
@@ -193,7 +193,7 @@ impl LayoutNode {
     }
 
     /// Find the pane at a given position.
-    pub(crate) fn pane_at(&self, geos: &[PaneGeometry], x: u32, y: u32) -> Option<PaneId> {
+    pub fn pane_at(&self, geos: &[PaneGeometry], x: u32, y: u32) -> Option<PaneId> {
         for geo in geos {
             if x >= geo.xoff
                 && x < geo.xoff + geo.sx
