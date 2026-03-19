@@ -73,12 +73,19 @@ impl CompactCell {
     pub const EXTENDED: u8 = 0x01;
     pub const DIRTY: u8 = 0x02;
     pub const WIDE_CONT: u8 = 0x04;
+    pub const SCROLL_DIRTY: u8 = 0x08;
 
     pub fn is_extended(self) -> bool {
         self.flags & Self::EXTENDED != 0
     }
 
+    /// True if this cell needs rendering (content change or scroll shift).
     pub fn is_dirty(self) -> bool {
+        self.flags & (Self::DIRTY | Self::SCROLL_DIRTY) != 0
+    }
+
+    /// True if this cell was modified by a content write (not just scroll-shifted).
+    pub fn is_content_dirty(self) -> bool {
         self.flags & Self::DIRTY != 0
     }
 
@@ -87,7 +94,7 @@ impl CompactCell {
     }
 
     pub fn clear_dirty(&mut self) {
-        self.flags &= !Self::DIRTY;
+        self.flags &= !(Self::DIRTY | Self::SCROLL_DIRTY);
     }
 
     /// Get the extended index when ch == 0xFF. The attr/fg/bg fields store a u24 index.
@@ -300,6 +307,13 @@ impl GridLine {
         }
     }
 
+    /// Mark all cells as scroll-shifted (distinguishable from content writes).
+    pub fn mark_scroll_dirty(&mut self) {
+        for c in &mut self.compact {
+            c.flags |= CompactCell::SCROLL_DIRTY;
+        }
+    }
+
     /// Clear and resize to width, reusing the existing allocation.
     pub fn clear_to(&mut self, width: u32) {
         let width = width as usize;
@@ -369,6 +383,9 @@ pub struct Grid {
     pub sx: u32,
     pub sy: u32,
     pub hlimit: u32,
+    /// Full-screen scroll-ups since last render. Used by the renderer to emit
+    /// terminal scroll commands instead of repainting shifted lines.
+    pub scroll_pending: u32,
 }
 
 impl Grid {
@@ -382,6 +399,7 @@ impl Grid {
             sx,
             sy,
             hlimit,
+            scroll_pending: 0,
         }
     }
 
@@ -425,15 +443,39 @@ impl Grid {
                 GridLine::new(self.sx)
             };
             self.lines.push_back(new_line);
-            // Mark ALL visible lines dirty — every row now shows a different line
+
+            self.scroll_pending = self.scroll_pending.saturating_add(1);
             let hsize = self.hsize();
-            for row in 0..self.sy {
-                let abs = (hsize + row) as usize;
-                if let Some(line) = self.lines.get_mut(abs) {
+
+            if self.scroll_pending >= self.sy {
+                // Full screen scrolled — mark all dirty, no scroll optimization
+                self.scroll_pending = 0;
+                for row in 0..self.sy {
+                    let abs = (hsize + row) as usize;
+                    if let Some(line) = self.lines.get_mut(abs) {
+                        line.mark_dirty();
+                    }
+                }
+            } else {
+                // Mark shifted lines with SCROLL_DIRTY (distinguishable from
+                // content writes so the renderer can skip them when using CSI S)
+                for row in 0..self.sy.saturating_sub(1) {
+                    let abs = (hsize + row) as usize;
+                    if let Some(line) = self.lines.get_mut(abs) {
+                        line.mark_scroll_dirty();
+                    }
+                }
+                // New bottom line gets regular DIRTY — it's new content
+                if let Some(line) = self.lines.back_mut() {
                     line.mark_dirty();
                 }
             }
         } else {
+            // Scroll region invalidates scroll-up optimization
+            if self.scroll_pending > 0 {
+                self.scroll_pending = 0;
+                self.mark_all_dirty();
+            }
             // Scroll region: remove line at `top` of region, insert blank at `bottom`
             let hsize = self.hsize();
             let abs_top = hsize + top;
@@ -455,6 +497,11 @@ impl Grid {
 
     /// Scroll down: insert a blank line at top of region, remove line at bottom.
     pub fn scroll_down(&mut self, top: u32, bottom: u32) {
+        // Scroll-down invalidates the scroll-up optimization
+        if self.scroll_pending > 0 {
+            self.scroll_pending = 0;
+            self.mark_all_dirty();
+        }
         let hsize = self.hsize();
         let abs_top = hsize + top;
         let abs_bottom = hsize + bottom;
@@ -475,6 +522,7 @@ impl Grid {
     /// Resize the grid to new dimensions with reflow.
     /// Lines marked WRAPPED are joined and re-split at the new width.
     pub fn resize(&mut self, new_sx: u32, new_sy: u32) {
+        self.scroll_pending = 0;
         if new_sx != self.sx && new_sx > 0 {
             self.reflow(new_sx);
         } else {
@@ -613,6 +661,7 @@ impl Grid {
 
     /// Clear all content.
     pub fn clear(&mut self) {
+        self.scroll_pending = 0;
         self.lines.clear();
         for _ in 0..self.sy {
             self.lines.push_back(GridLine::new(self.sx));

@@ -474,6 +474,135 @@ fn bench_render_full_screen(c: &mut Criterion) {
     });
 }
 
+// ---------------------------------------------------------------------------
+// Render-after-scroll benchmarks — measure scroll optimization
+// ---------------------------------------------------------------------------
+
+/// Helper: set up a state with a filled pane, do an initial render + clear_dirty.
+fn make_scroll_bench_state(
+    sx: u32,
+    sy: u32,
+) -> (
+    tm::state::State,
+    tm::config::Config,
+    tm::state::ClientId,
+    tm::state::PaneId,
+) {
+    use tm::config::Config;
+    use tm::state::{Client, Pane, State};
+
+    let mut state = State::new();
+    let config = Config::default_config();
+    let pid = state.alloc_pane_id();
+    let mut pane = Pane::new(pid, -1, 0, sx, sy.saturating_sub(1));
+    // Fill visible lines with content
+    let pane_sy = sy.saturating_sub(1);
+    for row in 0..pane_sy {
+        for col in 0..sx {
+            let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
+            pane.screen
+                .grid
+                .visible_line_mut(row)
+                .unwrap()
+                .set_cell(col, &content);
+        }
+    }
+    state.panes.insert(pid, pane);
+    let sid = state.create_session("bench", pid, sx, sy);
+    let cid = state.alloc_client_id();
+    state
+        .clients
+        .insert(cid, Client::new(cid, -1, -1, sx, sy, sid));
+
+    // Initial render + clear to establish baseline terminal state
+    let mut tty = TtyWriter::new();
+    tm::render::render_client(&state, &config, cid, &mut tty);
+    tm::render::clear_dirty(&mut state, cid);
+
+    (state, config, cid, pid)
+}
+
+fn bench_render_after_scroll_1(c: &mut Criterion) {
+    let (mut state, config, cid, pid) = make_scroll_bench_state(80, 25);
+    c.bench_function("render after 1 scroll 80x24", |b| {
+        let mut tty = TtyWriter::new();
+        b.iter(|| {
+            // Simulate one line of output: scroll + write new bottom line
+            let pane = state.panes.get_mut(&pid).unwrap();
+            let sy = pane.screen.grid.sy;
+            pane.screen.grid.scroll_up(0, sy - 1);
+            for col in 0..80u32 {
+                let content = CellContent::from_ascii(b'a' + (col % 26) as u8);
+                pane.screen
+                    .grid
+                    .visible_line_mut(sy - 1)
+                    .unwrap()
+                    .set_cell(col, &content);
+            }
+
+            tty.buf.clear();
+            tty.reset_state();
+            tm::render::render_client(&state, &config, cid, &mut tty);
+            black_box(tty.buf.len());
+            tm::render::clear_dirty(&mut state, cid);
+        });
+    });
+}
+
+fn bench_render_after_scroll_5(c: &mut Criterion) {
+    let (mut state, config, cid, pid) = make_scroll_bench_state(80, 25);
+    c.bench_function("render after 5 scrolls 80x24", |b| {
+        let mut tty = TtyWriter::new();
+        b.iter(|| {
+            let pane = state.panes.get_mut(&pid).unwrap();
+            let sy = pane.screen.grid.sy;
+            for i in 0..5u32 {
+                pane.screen.grid.scroll_up(0, sy - 1);
+                for col in 0..80u32 {
+                    let content = CellContent::from_ascii(b'a' + ((col + i) % 26) as u8);
+                    pane.screen
+                        .grid
+                        .visible_line_mut(sy - 1)
+                        .unwrap()
+                        .set_cell(col, &content);
+                }
+            }
+
+            tty.buf.clear();
+            tty.reset_state();
+            tm::render::render_client(&state, &config, cid, &mut tty);
+            black_box(tty.buf.len());
+            tm::render::clear_dirty(&mut state, cid);
+        });
+    });
+}
+
+fn bench_render_after_scroll_200x50(c: &mut Criterion) {
+    let (mut state, config, cid, pid) = make_scroll_bench_state(200, 51);
+    c.bench_function("render after 1 scroll 200x50", |b| {
+        let mut tty = TtyWriter::new();
+        b.iter(|| {
+            let pane = state.panes.get_mut(&pid).unwrap();
+            let sy = pane.screen.grid.sy;
+            pane.screen.grid.scroll_up(0, sy - 1);
+            for col in 0..200u32 {
+                let content = CellContent::from_ascii(b'a' + (col % 26) as u8);
+                pane.screen
+                    .grid
+                    .visible_line_mut(sy - 1)
+                    .unwrap()
+                    .set_cell(col, &content);
+            }
+
+            tty.buf.clear();
+            tty.reset_state();
+            tm::render::render_client(&state, &config, cid, &mut tty);
+            black_box(tty.buf.len());
+            tm::render::clear_dirty(&mut state, cid);
+        });
+    });
+}
+
 fn bench_layout_calculate(c: &mut Criterion) {
     use tm::layout::{LayoutNode, SplitDir};
     use tm::state::PaneId;
@@ -631,6 +760,15 @@ criterion_group!(
     bench_mouse_drag_input,
 );
 
+criterion_group!(
+    name = scroll_render_benches;
+    config = fast();
+    targets =
+    bench_render_after_scroll_1,
+    bench_render_after_scroll_5,
+    bench_render_after_scroll_200x50,
+);
+
 criterion_main!(
     grid_benches,
     vt_benches,
@@ -638,5 +776,6 @@ criterion_main!(
     input_benches,
     tty_benches,
     simd_benches,
-    slow_path_benches
+    slow_path_benches,
+    scroll_render_benches
 );

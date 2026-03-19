@@ -47,6 +47,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
             status_row,
             oy,
             pane_sel.as_ref(),
+            sx,
             tty,
         );
     } else {
@@ -70,6 +71,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
                 geo.sy,
                 oy,
                 pane_sel.as_ref(),
+                sx,
                 tty,
             );
         }
@@ -115,6 +117,7 @@ fn render_pane(
     sy: u32,
     copy_oy: u32,
     sel: Option<&crate::state::Selection>,
+    client_sx: u32,
     tty: &mut TtyWriter,
 ) {
     let Some(pane) = state.panes.get(&pid) else {
@@ -124,6 +127,19 @@ fn render_pane(
     let grid = &screen.grid;
     let force =
         pane.flags.contains(crate::state::PaneFlags::REDRAW) || copy_oy > 0 || sel.is_some();
+
+    // Scroll optimization: when the grid has pending full-screen scrolls and
+    // the pane spans the full terminal width, emit CSI S to scroll the terminal
+    // and only repaint lines with actual content changes.
+    let scroll_pending = grid.scroll_pending;
+    let use_scroll_opt =
+        scroll_pending > 0 && scroll_pending < sy && !force && xoff == 0 && sx >= client_sx;
+
+    if use_scroll_opt {
+        tty.set_scroll_region(yoff, yoff + sy - 1);
+        tty.scroll_up_lines(scroll_pending);
+        tty.reset_scroll_region();
+    }
 
     // Pre-compute selection range
     let sel_range = sel.map(|s| s.ordered());
@@ -147,7 +163,16 @@ fn render_pane(
         };
 
         if !force {
-            let any_dirty = line.compact.iter().take(sx as usize).any(|c| c.is_dirty());
+            let any_dirty = if use_scroll_opt {
+                // Only render lines with content changes — scroll-shifted-only
+                // lines are already correct on the terminal from CSI S.
+                line.compact
+                    .iter()
+                    .take(sx as usize)
+                    .any(|c| c.is_content_dirty())
+            } else {
+                line.compact.iter().take(sx as usize).any(|c| c.is_dirty())
+            };
             if !any_dirty {
                 continue;
             }
@@ -473,6 +498,7 @@ pub fn clear_dirty(state: &mut State, cid: ClientId) {
     for &pid in &window.panes {
         if let Some(pane) = state.panes.get_mut(&pid) {
             let screen = pane.active_screen_mut();
+            screen.grid.scroll_pending = 0;
             let sy = screen.sy();
             for row in 0..sy {
                 if let Some(line) = screen.grid.visible_line_mut(row) {
@@ -542,5 +568,142 @@ mod tests {
 
         // The tty buffer should have some output (at minimum sync_begin, cursor_hide, etc.)
         assert!(!tty.is_empty());
+    }
+
+    #[test]
+    fn scroll_optimization_reduces_output() {
+        use crate::grid::CellContent;
+
+        let (mut state, cid) = make_test_state();
+        let config = Config::default_config();
+        let pid = state.active_pane_for_client(cid).unwrap();
+
+        // Fill visible lines
+        let pane = state.panes.get_mut(&pid).unwrap();
+        for row in 0..24u32 {
+            for col in 0..80u32 {
+                let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
+                pane.screen
+                    .grid
+                    .visible_line_mut(row)
+                    .unwrap()
+                    .set_cell(col, &content);
+            }
+        }
+
+        // Initial render + clear dirty (establishes terminal state)
+        let mut tty = TtyWriter::new();
+        super::render_client(&state, &config, cid, &mut tty);
+        let full_render_bytes = tty.buf.len();
+        super::clear_dirty(&mut state, cid);
+
+        // Scroll 1 line + write new bottom content
+        let pane = state.panes.get_mut(&pid).unwrap();
+        let sy = pane.screen.grid.sy;
+        pane.screen.grid.scroll_up(0, sy - 1);
+        for col in 0..80u32 {
+            let content = CellContent::from_ascii(b'a' + (col % 26) as u8);
+            pane.screen
+                .grid
+                .visible_line_mut(sy - 1)
+                .unwrap()
+                .set_cell(col, &content);
+        }
+
+        // Render after scroll — should use scroll optimization
+        tty.buf.clear();
+        tty.reset_state();
+        super::render_client(&state, &config, cid, &mut tty);
+        let scroll_render_bytes = tty.buf.len();
+
+        // Scroll-optimized render should be much smaller than full render
+        assert!(
+            scroll_render_bytes < full_render_bytes / 2,
+            "scroll render ({scroll_render_bytes}B) should be much less than \
+             full render ({full_render_bytes}B)"
+        );
+
+        // Verify scroll_pending is consumed by clear_dirty
+        super::clear_dirty(&mut state, cid);
+        let pane = state.panes.get(&pid).unwrap();
+        assert_eq!(pane.screen.grid.scroll_pending, 0);
+    }
+
+    #[test]
+    fn scroll_optimization_byte_counts() {
+        use crate::grid::CellContent;
+
+        for (sx, sy_total, label) in [(80, 25, "80x24"), (200, 51, "200x50")] {
+            let mut state = State::new();
+            let config = Config::default_config();
+            let pid = state.alloc_pane_id();
+            let sy = sy_total - 1; // status bar
+            let pane = Pane::new(pid, -1, 0, sx, sy);
+            state.panes.insert(pid, pane);
+            let sid = state.create_session("test", pid, sx, sy_total);
+            let cid = state.alloc_client_id();
+            state
+                .clients
+                .insert(cid, Client::new(cid, -1, -1, sx, sy_total, sid));
+
+            // Fill and do initial render
+            let pane = state.panes.get_mut(&pid).unwrap();
+            for row in 0..sy {
+                for col in 0..sx {
+                    let content = CellContent::from_ascii(b'A' + (col % 26) as u8);
+                    pane.screen
+                        .grid
+                        .visible_line_mut(row)
+                        .unwrap()
+                        .set_cell(col, &content);
+                }
+            }
+            let mut tty = TtyWriter::new();
+            super::render_client(&state, &config, cid, &mut tty);
+            let full = tty.buf.len();
+            super::clear_dirty(&mut state, cid);
+
+            // Scroll 1 + render
+            let pane = state.panes.get_mut(&pid).unwrap();
+            pane.screen.grid.scroll_up(0, sy - 1);
+            for col in 0..sx {
+                let content = CellContent::from_ascii(b'a' + (col % 26) as u8);
+                pane.screen
+                    .grid
+                    .visible_line_mut(sy - 1)
+                    .unwrap()
+                    .set_cell(col, &content);
+            }
+            tty.buf.clear();
+            tty.reset_state();
+            super::render_client(&state, &config, cid, &mut tty);
+            let scroll1 = tty.buf.len();
+            super::clear_dirty(&mut state, cid);
+
+            // Scroll 5 + render
+            let pane = state.panes.get_mut(&pid).unwrap();
+            for i in 0..5u32 {
+                pane.screen.grid.scroll_up(0, sy - 1);
+                for col in 0..sx {
+                    let content = CellContent::from_ascii(b'a' + ((col + i) % 26) as u8);
+                    pane.screen
+                        .grid
+                        .visible_line_mut(sy - 1)
+                        .unwrap()
+                        .set_cell(col, &content);
+                }
+            }
+            tty.buf.clear();
+            tty.reset_state();
+            super::render_client(&state, &config, cid, &mut tty);
+            let scroll5 = tty.buf.len();
+            super::clear_dirty(&mut state, cid);
+
+            eprintln!(
+                "{label}: full={full}B  scroll1={scroll1}B ({:.0}%)  scroll5={scroll5}B ({:.0}%)",
+                scroll1 as f64 / full as f64 * 100.0,
+                scroll5 as f64 / full as f64 * 100.0
+            );
+        }
     }
 }

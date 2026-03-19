@@ -102,6 +102,38 @@ Two independent render clocks exist: tm's 16ms poll tick (~60fps) and the termin
 
 **Scroll coalescing** uses the same principle: wheel events accumulate `scroll_deferred` between ticks, flushed as a single offset change on the next render. This avoids per-wheel-tick full redraws during rapid scrolling.
 
+## Single-Threaded Performance Model
+
+Everything runs on one thread — no async, no locks, no channels. This works because the bottleneck is bytes written to the client tty, not CPU. Every optimization targets reducing tty output volume:
+
+**Why single-threaded works**: A terminal multiplexer transforms PTY output into escape sequences written to the client tty. The CPU cost of parsing VT sequences and updating a grid is negligible compared to the I/O cost of writing the rendered output to the tty pipe. Threading would add synchronization overhead without meaningfully reducing the tty write volume — which is the actual bottleneck.
+
+**Layer-by-layer optimizations**, from VT input to tty output:
+
+| Layer | Optimization | Effect |
+|---|---|---|
+| VT parser | SIMD ASCII scan (~58 GB/s) | Skip per-byte dispatch for 95% of traffic |
+| Grid cells | Two-tier encoding (CompactCell 5B / ExtendedCell ~20B) | Cache-friendly, low memory (3MB/10K history) |
+| Grid cells | Skip-if-unchanged in `set_cell` | Avoid marking cells dirty when VT output matches current content |
+| Grid scroll | Line recycling in `scroll_up` | Reuse oldest history line allocation instead of alloc+dealloc |
+| Dirty tracking | Per-cell dirty flag + `SCROLL_DIRTY` flag | Distinguish scroll-shifted cells from content writes |
+| Render | Terminal scroll commands (`CSI S`) | For full-width panes, emit 3-byte scroll command instead of repainting shifted rows |
+| Render | Dirty-line skip | Skip entire rows with no dirty cells |
+| TtyWriter | SGR attribute deduplication | Skip redundant color/attribute sequences for consecutive same-styled cells |
+| TtyWriter | Buffered single `write()` per client per frame | Minimize syscall overhead |
+| Frame pacing | 16ms coalesce window | Batch rapid output into single render pass |
+
+**Scroll optimization detail**: When a program outputs new lines (build output, `cat`, logs), content scrolls up line by line. Without optimization, every visible row is repainted (all cells dirty from the scroll). With optimization, `scroll_up` marks shifted rows with `SCROLL_DIRTY` (not `DIRTY`). The renderer detects `scroll_pending > 0`, emits `CSI S` to shift the terminal content, then only repaints rows with `DIRTY` cells (the new bottom lines). Individual VT writes between scrolls use `DIRTY`, so they're always rendered correctly.
+
+**Measured byte reduction** (scroll optimization):
+
+| Scenario | Full repaint | After 1 scroll | Reduction |
+|---|---|---|---|
+| 80×24 | 2,318 B | 247 B | 89% |
+| 200×50 | 10,804 B | 487 B | 95% |
+
+The optimization applies to full-width panes (zoomed, single-pane, horizontal splits). Side-by-side splits fall back to dirty-cell rendering because `CSI S` scrolls the full terminal width.
+
 ## Platform Support
 
 | | macOS aarch64 | Linux aarch64 | Linux x86_64 |

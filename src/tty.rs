@@ -207,6 +207,27 @@ impl TtyWriter {
         }
     }
 
+    /// Set scroll region (top and bottom rows, 0-based).
+    pub fn set_scroll_region(&mut self, top: u32, bottom: u32) {
+        use std::io::Write;
+        let _ = write!(self.buf, "\x1b[{};{}r", top + 1, bottom + 1);
+    }
+
+    /// Reset scroll region to full screen.
+    pub fn reset_scroll_region(&mut self) {
+        self.write_raw(b"\x1b[r");
+    }
+
+    /// Scroll up n lines within the current scroll region.
+    pub fn scroll_up_lines(&mut self, n: u32) {
+        use std::io::Write;
+        if n == 1 {
+            self.write_raw(b"\x1b[S");
+        } else if n > 1 {
+            let _ = write!(self.buf, "\x1b[{}S", n);
+        }
+    }
+
     /// Clear the entire screen.
     pub fn clear_screen(&mut self) {
         self.write_raw(b"\x1b[2J");
