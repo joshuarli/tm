@@ -839,9 +839,18 @@ fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
 }
 
 fn exit_copy_mode(state: &mut State, cid: ClientId) {
+    let pane_id = state.clients.get(&cid).map(|c| c.copy_pane);
     if let Some(client) = state.clients.get_mut(&cid) {
         client.mode = ClientMode::Normal;
         client.copy_oy = 0;
+        client.sel = None;
+    }
+    // Mark all visible lines dirty so they redraw cleanly
+    if let Some(pid) = pane_id {
+        if let Some(pane) = state.panes.get_mut(&pid) {
+            pane.active_screen_mut().grid.mark_all_dirty();
+            pane.flags |= crate::state::PaneFlags::REDRAW;
+        }
     }
 }
 
@@ -984,14 +993,18 @@ fn process_mouse(
 
             // Extract selected text
             let text = extract_selection(state, pid, &sel);
-            // Clear selection
+
+            // Clear selection and exit copy mode
             if let Some(client) = state.clients.get_mut(&cid) {
                 client.sel = None;
+                if client.mode == ClientMode::CopyMode {
+                    client.mode = ClientMode::Normal;
+                    client.copy_oy = 0;
+                }
             }
 
             if !text.is_empty() {
                 // Send to clipboard via OSC 52
-                use std::io::Write;
                 let b64 = base64_encode(text.as_bytes());
                 let osc = format!("\x1b]52;c;{b64}\x07");
                 unsafe {

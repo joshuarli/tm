@@ -140,7 +140,7 @@ fn render_pane(
 
             let mut cell = line.get_cell(col);
 
-            // Check if this cell is in the selection — apply reverse video
+            // Check if this cell is in the selection — yellow background
             if let Some(((sc, sr), (ec, er))) = sel_range {
                 let in_sel = if sr == er {
                     abs_row == sr && col >= sc && col <= ec
@@ -152,7 +152,8 @@ fn render_pane(
                     abs_row > sr && abs_row < er
                 };
                 if in_sel {
-                    cell.attr.set(CellAttr::REVERSE);
+                    cell.bg = Color::Palette(3); // yellow
+                    cell.fg = Color::Palette(0); // black text on yellow
                 }
             }
 
