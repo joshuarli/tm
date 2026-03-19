@@ -884,49 +884,18 @@ fn process_mouse(
             InputResult::None
         }
         MouseEvent::WheelUp { x, y } => {
-            let Some(wid) = state.active_window_for_client(cid) else {
-                return InputResult::None;
-            };
-            let Some(window) = state.windows.get(&wid) else {
-                return InputResult::None;
-            };
-            let geos = window.layout.calculate(0, 0, window.sx, window.sy);
-            let pid = crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y)
-                .unwrap_or(window.active_pane);
-
-            // Check if pane is in alt screen — send up arrow instead
-            if let Some(pane) = state.panes.get(&pid) {
-                if pane.is_alt_screen() {
-                    return InputResult::PtyWrite(pid, b"\x1b[A\x1b[A\x1b[A".to_vec());
-                }
-            }
-
-            // Enter copy mode or scroll
-            // For now, just enter copy mode
-            if let Some(client) = state.clients.get_mut(&cid) {
-                if client.mode != ClientMode::CopyMode {
-                    client.mode = ClientMode::CopyMode;
-                    return InputResult::Redraw;
-                }
+            let pid = find_pane_at(state, cid, x, y);
+            if let Some(pid) = pid {
+                // Send up arrows — works for alt screen apps and is
+                // harmless for the shell. Copy mode scroll is not yet implemented.
+                return InputResult::PtyWrite(pid, b"\x1b[A\x1b[A\x1b[A".to_vec());
             }
             InputResult::None
         }
         MouseEvent::WheelDown { x, y } => {
-            let Some(wid) = state.active_window_for_client(cid) else {
-                return InputResult::None;
-            };
-            let Some(window) = state.windows.get(&wid) else {
-                return InputResult::None;
-            };
-            let geos = window.layout.calculate(0, 0, window.sx, window.sy);
-            let pid = crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y)
-                .unwrap_or(window.active_pane);
-
-            // Check if pane is in alt screen — send down arrow
-            if let Some(pane) = state.panes.get(&pid) {
-                if pane.is_alt_screen() {
-                    return InputResult::PtyWrite(pid, b"\x1b[B\x1b[B\x1b[B".to_vec());
-                }
+            let pid = find_pane_at(state, cid, x, y);
+            if let Some(pid) = pid {
+                return InputResult::PtyWrite(pid, b"\x1b[B\x1b[B\x1b[B".to_vec());
             }
             InputResult::None
         }
@@ -938,6 +907,14 @@ fn process_mouse(
             InputResult::None
         }
     }
+}
+
+fn find_pane_at(state: &State, cid: ClientId, x: u32, y: u32) -> Option<PaneId> {
+    let wid = state.active_window_for_client(cid)?;
+    let window = state.windows.get(&wid)?;
+    let geos = window.layout.calculate(0, 0, window.sx, window.sy);
+    crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y)
+        .or(Some(window.active_pane))
 }
 
 fn forward_mouse_to_pane(state: &State, pid: PaneId, mouse: &MouseEvent) -> InputResult {
