@@ -273,6 +273,30 @@ impl std::ops::BitAndAssign for PaneFlags {
     }
 }
 
+/// Click-drag text selection.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Selection {
+    pub(crate) pane: PaneId,
+    /// Start and end in absolute grid coordinates (col, abs_row).
+    pub(crate) start_col: u32,
+    pub(crate) start_row: u32,
+    pub(crate) end_col: u32,
+    pub(crate) end_row: u32,
+}
+
+impl Selection {
+    /// Return (start, end) normalized so start <= end.
+    pub(crate) fn ordered(&self) -> ((u32, u32), (u32, u32)) {
+        let s = (self.start_col, self.start_row);
+        let e = (self.end_col, self.end_row);
+        if s.1 < e.1 || (s.1 == e.1 && s.0 <= e.0) {
+            (s, e)
+        } else {
+            (e, s)
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ClientMode {
     Normal,
@@ -294,6 +318,7 @@ pub(crate) struct Client {
     pub(crate) mode: ClientMode,
     pub(crate) copy_oy: u32,      // scroll offset in copy mode (lines from bottom)
     pub(crate) copy_pane: PaneId, // which pane is being scrolled
+    pub(crate) sel: Option<Selection>, // click-drag text selection
     pub(crate) status_message: Option<(String, Instant)>,
     pub(crate) prompt_buf: Option<String>,
     pub(crate) prompt_action: Option<PromptAction>,
@@ -330,6 +355,7 @@ impl Client {
             mode: ClientMode::Normal,
             copy_oy: 0,
             copy_pane: PaneId(0),
+            sel: None,
             status_message: None,
             prompt_buf: None,
             prompt_action: None,

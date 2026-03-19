@@ -30,10 +30,13 @@ pub(crate) fn render_client(state: &State, config: &Config, cid: ClientId, tty: 
         None
     };
 
+    let sel = client.sel;
+
     // Render panes
     if let Some(zoomed_pid) = window.zoomed {
         let oy = copy_oy.and_then(|(p, o)| if p == zoomed_pid { Some(o) } else { None }).unwrap_or(0);
-        render_pane(state, zoomed_pid, 0, 0, sx, status_row, oy, tty);
+        let pane_sel = sel.filter(|s| s.pane == zoomed_pid);
+        render_pane(state, zoomed_pid, 0, 0, sx, status_row, oy, pane_sel.as_ref(), tty);
     } else {
         let geos = window.layout.calculate(0, 0, window.sx, window.sy);
 
@@ -43,7 +46,8 @@ pub(crate) fn render_client(state: &State, config: &Config, cid: ClientId, tty: 
         // Render each pane
         for geo in &geos {
             let oy = copy_oy.and_then(|(p, o)| if p == geo.id { Some(o) } else { None }).unwrap_or(0);
-            render_pane(state, geo.id, geo.xoff, geo.yoff, geo.sx, geo.sy, oy, tty);
+            let pane_sel = sel.filter(|s| s.pane == geo.id);
+            render_pane(state, geo.id, geo.xoff, geo.yoff, geo.sx, geo.sy, oy, pane_sel.as_ref(), tty);
         }
     }
 
@@ -77,6 +81,7 @@ fn render_pane(
     sx: u32,
     sy: u32,
     copy_oy: u32,
+    sel: Option<&crate::state::Selection>,
     tty: &mut TtyWriter,
 ) {
     let Some(pane) = state.panes.get(&pid) else {
@@ -84,19 +89,23 @@ fn render_pane(
     };
     let screen = pane.active_screen();
     let grid = &screen.grid;
-    let force = pane.flags.contains(crate::state::PaneFlags::REDRAW) || copy_oy > 0;
+    let force = pane.flags.contains(crate::state::PaneFlags::REDRAW)
+        || copy_oy > 0
+        || sel.is_some();
+
+    // Pre-compute selection range
+    let sel_range = sel.map(|s| s.ordered());
 
     for row in 0..sy {
-        // In copy mode (oy > 0), read from history: line = hsize - oy + row
-        // In normal mode (oy == 0), read visible lines as before
-        let line = if copy_oy > 0 {
-            let abs = (grid.hsize() as i64 - copy_oy as i64 + row as i64) as u32;
-            grid.line(abs)
+        // Compute absolute grid row for this viewport line
+        let abs_row = if copy_oy > 0 {
+            (grid.hsize() as i64 - copy_oy as i64 + row as i64) as u32
         } else {
-            grid.visible_line(row)
+            grid.hsize() + row
         };
+
+        let line = grid.line(abs_row);
         let Some(line) = line else {
-            // No line — draw blank
             tty.cursor_goto(yoff + row, xoff);
             tty.reset_attrs();
             for _ in 0..sx {
@@ -105,7 +114,6 @@ fn render_pane(
             continue;
         };
 
-        // Check if any cell in this line is dirty (skip clean lines in normal mode)
         if !force {
             let any_dirty = line
                 .compact
@@ -125,13 +133,29 @@ fn render_pane(
         while col < cols {
             let c = &line.compact[col as usize];
 
-            // Skip wide char continuation cells
             if c.flags & CompactCell::WIDE_CONT != 0 {
                 col += 1;
                 continue;
             }
 
-            let cell = line.get_cell(col);
+            let mut cell = line.get_cell(col);
+
+            // Check if this cell is in the selection — apply reverse video
+            if let Some(((sc, sr), (ec, er))) = sel_range {
+                let in_sel = if sr == er {
+                    abs_row == sr && col >= sc && col <= ec
+                } else if abs_row == sr {
+                    col >= sc
+                } else if abs_row == er {
+                    col <= ec
+                } else {
+                    abs_row > sr && abs_row < er
+                };
+                if in_sel {
+                    cell.attr.set(CellAttr::REVERSE);
+                }
+            }
+
             tty.set_cell_attrs(&cell);
 
             let s = cell.ch_str();
@@ -286,7 +310,7 @@ fn render_status(
             attr: CellAttr(CellAttr::BOLD),
             ..CellContent::default()
         });
-        let display = format!("[copy mode] line {}", client.copy_oy);
+        let display = String::from("[copy mode]");
         let display: String = display.chars().take(sx as usize).collect();
         tty.write_str(&display);
         let remaining = sx as usize - display.len().min(sx as usize);

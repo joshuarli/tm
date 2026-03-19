@@ -41,7 +41,7 @@ pub(crate) fn process_input(
 
     // Copy mode
     if client.mode == ClientMode::CopyMode {
-        return process_copy_input(state, cid, event);
+        return process_copy_input(state, config, cid, event);
     }
 
     // Check for prefix key
@@ -875,7 +875,7 @@ fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
     InputResult::Redraw
 }
 
-fn process_copy_input(state: &mut State, cid: ClientId, event: InputEvent) -> InputResult {
+fn process_copy_input(state: &mut State, config: &Config, cid: ClientId, event: InputEvent) -> InputResult {
     match event {
         InputEvent::Key(key) => {
             let base = key.base();
@@ -895,6 +895,10 @@ fn process_copy_input(state: &mut State, cid: ClientId, event: InputEvent) -> In
         InputEvent::Mouse(MouseEvent::WheelDown { .. }) => {
             copy_scroll(state, cid, -(SCROLL_LINES as i32))
         }
+        InputEvent::Mouse(mouse) => {
+            // Delegate press/drag/release to normal mouse handler for selection
+            process_mouse(state, config, cid, mouse)
+        }
         _ => InputResult::None,
     }
 }
@@ -907,7 +911,7 @@ fn process_mouse(
 ) -> InputResult {
     match mouse {
         MouseEvent::Press { button: 0, x, y } => {
-            // Left click — focus pane
+            // Left click — focus pane + start selection
             let Some(wid) = state.active_window_for_client(cid) else {
                 return InputResult::None;
             };
@@ -916,21 +920,89 @@ fn process_mouse(
             };
             let geos = window.layout.calculate(0, 0, window.sx, window.sy);
             if let Some(pid) = crate::layout::LayoutNode::pane_at(
-                &window.layout,
-                &geos,
-                x,
-                y,
+                &window.layout, &geos, x, y,
             ) {
                 if let Some(window) = state.windows.get_mut(&wid) {
                     if window.active_pane != pid {
                         window.active_pane = pid;
-                        return InputResult::Redraw;
                     }
                 }
-                // Forward mouse to pane
-                return forward_mouse_to_pane(state, pid, &mouse);
+                // Start selection — convert screen coords to pane-local + absolute grid row
+                if let Some(pane) = state.panes.get(&pid) {
+                    let local_col = x.saturating_sub(pane.xoff);
+                    let local_row = y.saturating_sub(pane.yoff);
+                    let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
+                    let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
+                    if let Some(client) = state.clients.get_mut(&cid) {
+                        client.sel = Some(crate::state::Selection {
+                            pane: pid,
+                            start_col: local_col,
+                            start_row: abs_row,
+                            end_col: local_col,
+                            end_row: abs_row,
+                        });
+                    }
+                    return InputResult::Redraw;
+                }
             }
             InputResult::None
+        }
+        MouseEvent::Drag { button: 0, x, y } => {
+            // Extend selection
+            let Some(client) = state.clients.get(&cid) else {
+                return InputResult::None;
+            };
+            let Some(sel) = client.sel else {
+                return InputResult::None;
+            };
+            let pid = sel.pane;
+            if let Some(pane) = state.panes.get(&pid) {
+                let local_col = x.saturating_sub(pane.xoff).min(pane.sx.saturating_sub(1));
+                let local_row = y.saturating_sub(pane.yoff).min(pane.sy.saturating_sub(1));
+                let oy = client.copy_oy;
+                let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
+                if let Some(client) = state.clients.get_mut(&cid) {
+                    if let Some(sel) = &mut client.sel {
+                        sel.end_col = local_col;
+                        sel.end_row = abs_row;
+                    }
+                }
+                return InputResult::Redraw;
+            }
+            InputResult::None
+        }
+        MouseEvent::Release { .. } => {
+            // End selection — extract text and send to clipboard via OSC 52
+            let Some(client) = state.clients.get(&cid) else {
+                return InputResult::None;
+            };
+            let Some(sel) = client.sel else {
+                return InputResult::None;
+            };
+            let tty_fd = client.tty_fd;
+            let pid = sel.pane;
+
+            // Extract selected text
+            let text = extract_selection(state, pid, &sel);
+            // Clear selection
+            if let Some(client) = state.clients.get_mut(&cid) {
+                client.sel = None;
+            }
+
+            if !text.is_empty() {
+                // Send to clipboard via OSC 52
+                use std::io::Write;
+                let b64 = base64_encode(text.as_bytes());
+                let osc = format!("\x1b]52;c;{b64}\x07");
+                unsafe {
+                    libc::write(
+                        tty_fd,
+                        osc.as_ptr() as *const libc::c_void,
+                        osc.len(),
+                    );
+                }
+            }
+            InputResult::Redraw
         }
         MouseEvent::WheelUp { x, y } => {
             let Some(pid) = find_pane_at(state, cid, x, y) else {
@@ -962,6 +1034,72 @@ fn process_mouse(
             InputResult::None
         }
     }
+}
+
+fn extract_selection(state: &State, pid: PaneId, sel: &crate::state::Selection) -> String {
+    let Some(pane) = state.panes.get(&pid) else {
+        return String::new();
+    };
+    let grid = &pane.active_screen().grid;
+    let ((sc, sr), (ec, er)) = sel.ordered();
+    let mut text = String::new();
+
+    for abs_row in sr..=er {
+        let Some(line) = grid.line(abs_row) else {
+            continue;
+        };
+        let col_start = if abs_row == sr { sc } else { 0 };
+        let col_end = if abs_row == er {
+            ec + 1
+        } else {
+            line.compact.len() as u32
+        };
+
+        for col in col_start..col_end.min(line.compact.len() as u32) {
+            let cell = line.get_cell(col);
+            if cell.ch[0] == 0 || (cell.ch_len == 1 && cell.ch[0] == b' ') {
+                text.push(' ');
+            } else {
+                text.push_str(cell.ch_str());
+            }
+        }
+
+        // Trim trailing spaces on each line
+        let trimmed = text.trim_end_matches(' ').len();
+        text.truncate(trimmed);
+
+        if abs_row < er {
+            // Add newline between lines, but not for wrapped lines
+            if !line.flags.has(crate::grid::LineFlags::WRAPPED) {
+                text.push('\n');
+            }
+        }
+    }
+    text
+}
+
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 fn find_pane_at(state: &State, cid: ClientId, x: u32, y: u32) -> Option<PaneId> {
