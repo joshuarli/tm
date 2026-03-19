@@ -100,6 +100,13 @@ pub enum InputEvent {
 /// Parse raw input bytes into events. Returns events and bytes consumed.
 pub fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
     let mut events = Vec::new();
+    let consumed = parse_input_into(buf, &mut events);
+    (events, consumed)
+}
+
+/// Parse into a reusable buffer. Returns bytes consumed.
+pub fn parse_input_into(buf: &[u8], events: &mut Vec<InputEvent>) -> usize {
+    events.clear();
     let mut pos = 0;
 
     while pos < buf.len() {
@@ -253,7 +260,7 @@ pub fn parse_input(buf: &[u8]) -> (Vec<InputEvent>, usize) {
         }
     }
 
-    (events, pos)
+    pos
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {

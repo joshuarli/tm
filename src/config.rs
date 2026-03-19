@@ -28,7 +28,7 @@ pub struct Binding {
     pub repeat: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Action {
     Detach,
     NewWindow,

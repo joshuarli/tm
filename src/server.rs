@@ -100,6 +100,14 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
     let mut last_render = Instant::now();
     let mut needs_render = false;
     let mut had_session = false;
+
+    // Reusable buffers — cleared each iteration, never reallocated
+    let mut new_panes: Vec<PaneId> = Vec::new();
+    let mut dead_clients: Vec<ClientId> = Vec::new();
+    let mut dead_panes: Vec<PaneId> = Vec::new();
+    let mut expired_msgs: Vec<ClientId> = Vec::new();
+    let mut input_events: Vec<keys::InputEvent> = Vec::new();
+
     loop {
         let timeout = if needs_render {
             let since = last_render.elapsed();
@@ -131,21 +139,24 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
             Err(e) => return Err(e.into()),
         }
 
-        let mut new_panes: Vec<PaneId> = Vec::new();
-        let mut dead_clients: Vec<ClientId> = Vec::new();
-        let mut dead_panes: Vec<PaneId> = Vec::new();
+        new_panes.clear();
+        dead_clients.clear();
+        dead_panes.clear();
+        expired_msgs.clear();
         let mut force_render = false;
 
-        // Expire status messages
-        let client_ids: Vec<ClientId> = state.clients.keys().copied().collect();
-        for cid in &client_ids {
-            if let Some(client) = state.clients.get_mut(cid) {
-                if let Some((_, when)) = &client.status_message {
-                    if when.elapsed() >= Duration::from_secs(2) {
-                        client.status_message = None;
-                        force_render = true;
-                    }
+        // Expire status messages (two-pass to avoid borrow conflict)
+        for (cid, client) in &state.clients {
+            if let Some((_, when)) = &client.status_message {
+                if when.elapsed() >= Duration::from_secs(2) {
+                    expired_msgs.push(*cid);
                 }
+            }
+        }
+        for cid in &expired_msgs {
+            if let Some(client) = state.clients.get_mut(cid) {
+                client.status_message = None;
+                force_render = true;
             }
         }
 
@@ -207,6 +218,7 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
                         &mut tty,
                         &mut new_panes,
                         &mut force_render,
+                        &mut input_events,
                     ) {
                         dead_clients.push(cid);
                     }
@@ -350,6 +362,7 @@ fn handle_client_data(
     tty: &mut TtyWriter,
     new_panes: &mut Vec<PaneId>,
     force_render: &mut bool,
+    input_events: &mut Vec<keys::InputEvent>,
 ) -> Result<(), ()> {
     let client = state.clients.get_mut(&cid).ok_or(())?;
     let sock_fd = client.socket_fd;
@@ -394,7 +407,7 @@ fn handle_client_data(
                 *force_render = true;
             }
             protocol::MSG_INPUT => {
-                handle_input(state, config, cid, &msg.payload, new_panes, force_render);
+                handle_input(state, config, cid, &msg.payload, new_panes, force_render, input_events);
             }
             protocol::MSG_RESIZE => {
                 handle_resize(state, cid, &msg.payload);
@@ -601,10 +614,11 @@ fn handle_input(
     data: &[u8],
     new_panes: &mut Vec<PaneId>,
     force_render: &mut bool,
+    input_events: &mut Vec<keys::InputEvent>,
 ) {
-    let (events, _consumed) = keys::parse_input(data);
+    keys::parse_input_into(data, input_events);
 
-    for event in events {
+    for event in input_events.drain(..) {
         let result = key_bind::process_input(state, config, cid, event);
         apply_result(state, config, cid, result, new_panes, force_render);
     }
