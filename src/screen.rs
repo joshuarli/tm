@@ -183,11 +183,16 @@ impl Screen {
             }
             let n = (bytes.len() - i).min(avail);
 
-            // Get the line pointer ONCE and write N cells in a tight loop
+            // Get the line pointer ONCE and write N cells in a tight loop.
+            // Skip cells that already have identical content (tmux optimization).
             if let Some(line) = self.grid.visible_line_mut(self.cy) {
                 let cells = &mut line.compact[cx..cx + n];
                 for (j, c) in cells.iter_mut().enumerate() {
-                    c.ch = bytes[i + j];
+                    let new_ch = bytes[i + j];
+                    if c.ch == new_ch && c.attr == attr && c.fg == fg && c.bg == bg && !c.is_extended() {
+                        continue; // identical — don't mark dirty
+                    }
+                    c.ch = new_ch;
                     c.attr = attr;
                     c.fg = fg;
                     c.bg = bg;

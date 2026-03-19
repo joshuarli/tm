@@ -177,20 +177,24 @@ impl GridLine {
             c.flags = CompactCell::EXTENDED | CompactCell::DIRTY;
         } else {
             let c = &mut self.compact[col];
-            c.ch = if content.ch_len == 1 {
-                content.ch[0]
-            } else {
-                b' '
-            };
-            c.attr = content.attr.basic();
-            c.fg = match content.fg {
+            let new_ch = if content.ch_len == 1 { content.ch[0] } else { b' ' };
+            let new_attr = content.attr.basic();
+            let new_fg = match content.fg {
                 Color::Palette(p) => p,
                 _ => 0,
             };
-            c.bg = match content.bg {
+            let new_bg = match content.bg {
                 Color::Palette(p) => p,
                 _ => 0,
             };
+            // Skip if identical — avoid marking dirty for unchanged cells
+            if !c.is_extended() && c.ch == new_ch && c.attr == new_attr && c.fg == new_fg && c.bg == new_bg {
+                return;
+            }
+            c.ch = new_ch;
+            c.attr = new_attr;
+            c.fg = new_fg;
+            c.bg = new_bg;
             c.flags = CompactCell::DIRTY;
         }
 
