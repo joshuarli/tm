@@ -39,9 +39,13 @@ pub fn process_input(
         return process_prompt_input(state, config, cid, event);
     }
 
-    // Copy mode
+    // Copy mode — only intercept input when the active pane is the copy pane.
+    // Clicking/typing in another pane should work normally without exiting copy mode.
     if client.mode == ClientMode::CopyMode {
-        return process_copy_input(state, config, cid, event);
+        let active = state.active_pane_for_client(cid);
+        if active == Some(client.copy_pane) {
+            return process_copy_input(state, config, cid, event);
+        }
     }
 
     // Check for prefix key
@@ -1066,18 +1070,25 @@ fn process_mouse(
             let tty_fd = client.tty_fd;
             let pid = sel.pane;
 
-            // Extract selected text
-            let text = extract_selection(state, pid, &sel);
+            // Only copy if the user actually dragged (start != end)
+            let dragged = sel.start_col != sel.end_col || sel.start_row != sel.end_row;
+            let text = if dragged {
+                extract_selection(state, pid, &sel)
+            } else {
+                String::new()
+            };
 
             // Clear selection and exit copy mode (full redraw)
-            let was_copy = state
+            let copy_pane = state
                 .clients
                 .get(&cid)
-                .is_some_and(|c| c.mode == ClientMode::CopyMode);
+                .filter(|c| c.mode == ClientMode::CopyMode)
+                .map(|c| c.copy_pane);
             if let Some(client) = state.clients.get_mut(&cid) {
                 client.sel = None;
             }
-            if was_copy {
+            if copy_pane == Some(pid) {
+                // Release on the copy pane — exit copy mode
                 exit_copy_mode(state, cid);
             } else {
                 // Even without copy mode, need full redraw to clear highlight
@@ -1360,32 +1371,36 @@ fn key_to_bytes(key: KeyCode, state: &State, cid: ClientId) -> Vec<u8> {
     match base {
         KeyCode::UP => {
             buf.extend_from_slice(arrow_prefix);
-            if ctrl {
-                buf.extend_from_slice(b"1;5A");
+            if ctrl || shift {
+                let m = 1 + u8::from(shift) + 4 * u8::from(ctrl);
+                buf.extend_from_slice(&[b'1', b';', b'0' + m, b'A']);
             } else {
                 buf.push(b'A');
             }
         }
         KeyCode::DOWN => {
             buf.extend_from_slice(arrow_prefix);
-            if ctrl {
-                buf.extend_from_slice(b"1;5B");
+            if ctrl || shift {
+                let m = 1 + u8::from(shift) + 4 * u8::from(ctrl);
+                buf.extend_from_slice(&[b'1', b';', b'0' + m, b'B']);
             } else {
                 buf.push(b'B');
             }
         }
         KeyCode::RIGHT => {
             buf.extend_from_slice(arrow_prefix);
-            if ctrl {
-                buf.extend_from_slice(b"1;5C");
+            if ctrl || shift {
+                let m = 1 + u8::from(shift) + 4 * u8::from(ctrl);
+                buf.extend_from_slice(&[b'1', b';', b'0' + m, b'C']);
             } else {
                 buf.push(b'C');
             }
         }
         KeyCode::LEFT => {
             buf.extend_from_slice(arrow_prefix);
-            if ctrl {
-                buf.extend_from_slice(b"1;5D");
+            if ctrl || shift {
+                let m = 1 + u8::from(shift) + 4 * u8::from(ctrl);
+                buf.extend_from_slice(&[b'1', b';', b'0' + m, b'D']);
             } else {
                 buf.push(b'D');
             }
