@@ -12,6 +12,9 @@ pub enum LayoutNode {
     Split {
         dir: SplitDir,
         children: Vec<LayoutNode>,
+        /// Absolute sizes per child (width for Horizontal, height for Vertical).
+        /// When empty, children are distributed evenly.
+        sizes: Vec<u32>,
     },
 }
 
@@ -44,33 +47,41 @@ impl LayoutNode {
                     sy,
                 });
             }
-            LayoutNode::Split { dir, children } => {
+            LayoutNode::Split {
+                dir,
+                children,
+                sizes,
+            } => {
                 if children.is_empty() {
                     return;
                 }
                 let n = children.len() as u32;
+                let separators = n - 1;
                 match dir {
                     SplitDir::Horizontal => {
-                        // Divide width evenly. Account for separator columns (1 char each).
-                        let separators = n - 1;
                         let avail = sx.saturating_sub(separators);
-                        let base_w = avail / n;
-                        let extra = avail % n;
                         let mut x = xoff;
                         for (i, child) in children.iter().enumerate() {
-                            let w = base_w + if (i as u32) < extra { 1 } else { 0 };
+                            let w = if sizes.len() == children.len() {
+                                sizes[i]
+                            } else {
+                                let base = avail / n;
+                                base + if (i as u32) < avail % n { 1 } else { 0 }
+                            };
                             child.calculate_inner(x, yoff, w, sy, out);
                             x += w + 1; // +1 for separator
                         }
                     }
                     SplitDir::Vertical => {
-                        let separators = n - 1;
                         let avail = sy.saturating_sub(separators);
-                        let base_h = avail / n;
-                        let extra = avail % n;
                         let mut y = yoff;
                         for (i, child) in children.iter().enumerate() {
-                            let h = base_h + if (i as u32) < extra { 1 } else { 0 };
+                            let h = if sizes.len() == children.len() {
+                                sizes[i]
+                            } else {
+                                let base = avail / n;
+                                base + if (i as u32) < avail % n { 1 } else { 0 }
+                            };
                             child.calculate_inner(xoff, y, sx, h, out);
                             y += h + 1; // +1 for separator
                         }
@@ -84,7 +95,9 @@ impl LayoutNode {
     pub fn remove_pane(&mut self, target: PaneId) -> bool {
         match self {
             LayoutNode::Pane(id) => *id == target,
-            LayoutNode::Split { children, .. } => {
+            LayoutNode::Split {
+                children, sizes, ..
+            } => {
                 // Find and remove the child containing the target
                 let idx = children.iter().position(|c| match c {
                     LayoutNode::Pane(id) => *id == target,
@@ -92,6 +105,11 @@ impl LayoutNode {
                 });
                 if let Some(idx) = idx {
                     children.remove(idx);
+                    if sizes.len() > idx {
+                        sizes.remove(idx);
+                    }
+                    // Clear sizes so remaining children redistribute evenly
+                    sizes.clear();
                     return true;
                 }
                 // Recurse into split children
@@ -129,12 +147,14 @@ impl LayoutNode {
                 *self = LayoutNode::Split {
                     dir,
                     children: vec![old, new],
+                    sizes: Vec::new(),
                 };
                 true
             }
             LayoutNode::Split {
                 dir: split_dir,
                 children,
+                sizes,
             } => {
                 // Check if target is a direct child and the split direction matches
                 if *split_dir == dir {
@@ -144,6 +164,8 @@ impl LayoutNode {
                     if let Some(idx) = idx {
                         // Insert new pane after the target in the same split
                         children.insert(idx + 1, LayoutNode::Pane(new_pane));
+                        // Clear custom sizes — redistribute evenly
+                        sizes.clear();
                         return true;
                     }
                 }
@@ -194,6 +216,95 @@ impl LayoutNode {
         }
         None
     }
+
+    /// Resize the border adjacent to `pane_id` in the given direction by `delta` cells.
+    /// Positive delta grows the pane (takes from the next neighbor), negative shrinks
+    /// (gives to the previous neighbor). `total` is the available space in the resize
+    /// direction for the current subtree.
+    /// Returns true if the resize succeeded.
+    pub fn resize_pane(&mut self, pane_id: PaneId, dir: SplitDir, delta: i32, total: u32) -> bool {
+        let LayoutNode::Split {
+            dir: split_dir,
+            children,
+            sizes,
+        } = self
+        else {
+            return false;
+        };
+
+        let Some(idx) = children.iter().position(|c| c.contains_pane(pane_id)) else {
+            return false;
+        };
+
+        // If this split's direction matches the resize direction, resize here
+        if *split_dir == dir {
+            let n = children.len();
+            let separators = (n as u32).saturating_sub(1);
+            let avail = total.saturating_sub(separators);
+
+            // Initialize sizes from even distribution if not set
+            if sizes.len() != n {
+                let base = avail / n as u32;
+                let extra = avail % n as u32;
+                *sizes = (0..n)
+                    .map(|i| base + if (i as u32) < extra { 1 } else { 0 })
+                    .collect();
+            }
+
+            // Pick neighbor: grow takes from next, shrink gives to previous
+            let neighbor = if delta > 0 {
+                if idx + 1 < n {
+                    idx + 1
+                } else {
+                    return false;
+                }
+            } else if idx > 0 {
+                idx - 1
+            } else {
+                return false;
+            };
+
+            let abs = delta.unsigned_abs();
+            let min_size = 2u32;
+            let actual = abs.min(sizes[neighbor].saturating_sub(min_size));
+            if actual == 0 {
+                return false;
+            }
+
+            sizes[idx] += actual;
+            sizes[neighbor] -= actual;
+            return true;
+        }
+
+        // Wrong direction — recurse into the child that contains the pane.
+        // Pass the total for the resize direction through unchanged (this split
+        // is perpendicular so it doesn't subdivide that dimension).
+        children[idx].resize_pane(pane_id, dir, delta, total)
+    }
+
+    /// Check if this subtree contains the given pane.
+    pub fn contains_pane(&self, pane_id: PaneId) -> bool {
+        match self {
+            LayoutNode::Pane(id) => *id == pane_id,
+            LayoutNode::Split { children, .. } => children.iter().any(|c| c.contains_pane(pane_id)),
+        }
+    }
+
+    /// Find a border at the given coordinates. Returns the direction of the border
+    /// and the pane on the "before" side (left or above the border).
+    pub fn border_at(geos: &[PaneGeometry], x: u32, y: u32) -> Option<(SplitDir, PaneId)> {
+        for geo in geos {
+            // Right border: x == xoff + sx, within the pane's vertical range
+            if x == geo.xoff + geo.sx && y >= geo.yoff && y < geo.yoff + geo.sy {
+                return Some((SplitDir::Horizontal, geo.id));
+            }
+            // Bottom border: y == yoff + sy, within the pane's horizontal range
+            if y == geo.yoff + geo.sy && x >= geo.xoff && x < geo.xoff + geo.sx {
+                return Some((SplitDir::Vertical, geo.id));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +325,7 @@ mod tests {
         let layout = LayoutNode::Split {
             dir: SplitDir::Horizontal,
             children: vec![LayoutNode::Pane(PaneId(0)), LayoutNode::Pane(PaneId(1))],
+            sizes: Vec::new(),
         };
         let geos = layout.calculate(0, 0, 81, 24);
         assert_eq!(geos.len(), 2);

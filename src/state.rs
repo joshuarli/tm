@@ -303,6 +303,14 @@ pub enum ClientMode {
     CommandPrompt,
 }
 
+/// Active border drag state for pane resizing.
+#[derive(Clone, Copy, Debug)]
+pub struct BorderDrag {
+    pub pane: PaneId,
+    pub dir: crate::layout::SplitDir,
+    pub last_pos: u32, // last x (horizontal) or y (vertical) position
+}
+
 /// Per-pane copy mode state for a client.
 pub struct CopyState {
     pub top: u32,
@@ -324,6 +332,7 @@ pub struct Client {
     pub mode: ClientMode,
     pub copy_modes: HashMap<PaneId, CopyState>, // per-pane copy/scroll state
     pub sel: Option<Selection>,                 // click-drag text selection
+    pub border_drag: Option<BorderDrag>,        // active border drag for resize
     pub status_message: Option<(String, Instant)>,
     pub prompt_buf: Option<String>,
     pub prompt_action: Option<PromptAction>,
@@ -361,6 +370,7 @@ impl Client {
             mode: ClientMode::Normal,
             copy_modes: HashMap::new(),
             sel: None,
+            border_drag: None,
             status_message: None,
             prompt_buf: None,
             prompt_action: None,

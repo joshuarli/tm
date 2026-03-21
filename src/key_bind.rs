@@ -248,6 +248,22 @@ fn dispatch_action(
             focus_direction(state, cid, 1, 0);
             InputResult::Redraw
         }
+        Action::ResizeUp => {
+            resize_active_pane(state, cid, crate::layout::SplitDir::Vertical, -1);
+            InputResult::Redraw
+        }
+        Action::ResizeDown => {
+            resize_active_pane(state, cid, crate::layout::SplitDir::Vertical, 1);
+            InputResult::Redraw
+        }
+        Action::ResizeLeft => {
+            resize_active_pane(state, cid, crate::layout::SplitDir::Horizontal, -1);
+            InputResult::Redraw
+        }
+        Action::ResizeRight => {
+            resize_active_pane(state, cid, crate::layout::SplitDir::Horizontal, 1);
+            InputResult::Redraw
+        }
         Action::ReloadConfig => InputResult::StatusMessage("configuration reloaded".to_string()),
         Action::CommandPrompt => {
             if let Some(client) = state.clients.get_mut(&cid) {
@@ -426,6 +442,27 @@ pub fn recalc_layout(state: &mut State, wid: WindowId) {
             }
             pane.flags |= crate::state::PaneFlags::REDRAW;
         }
+    }
+}
+
+fn resize_active_pane(state: &mut State, cid: ClientId, dir: crate::layout::SplitDir, delta: i32) {
+    let Some(pid) = state.active_pane_for_client(cid) else {
+        return;
+    };
+    let Some(wid) = state.active_window_for_client(cid) else {
+        return;
+    };
+    let Some(window) = state.windows.get_mut(&wid) else {
+        return;
+    };
+    let total = if dir == crate::layout::SplitDir::Horizontal {
+        window.sx
+    } else {
+        window.sy
+    };
+    if window.layout.resize_pane(pid, dir, delta, total) {
+        recalc_layout(state, wid);
+        mark_all_dirty(state);
     }
 }
 
@@ -995,6 +1032,24 @@ fn process_mouse(
                 return InputResult::None;
             };
             let geos = window.layout.calculate(0, 0, window.sx, window.sy);
+
+            // Check if click is on a pane border — start border drag
+            if let Some((dir, pane_id)) = crate::layout::LayoutNode::border_at(&geos, x, y) {
+                let pos = if dir == crate::layout::SplitDir::Horizontal {
+                    x
+                } else {
+                    y
+                };
+                if let Some(client) = state.clients.get_mut(&cid) {
+                    client.border_drag = Some(crate::state::BorderDrag {
+                        pane: pane_id,
+                        dir,
+                        last_pos: pos,
+                    });
+                }
+                return InputResult::None;
+            }
+
             let pid = crate::layout::LayoutNode::pane_at(&window.layout, &geos, x, y);
 
             // Focus the clicked pane
@@ -1038,6 +1093,38 @@ fn process_mouse(
             InputResult::None
         }
         MouseEvent::Drag { button: 0, x, y } => {
+            // Handle border drag for resize
+            let drag = state.clients.get(&cid).and_then(|c| c.border_drag);
+            if let Some(drag) = drag {
+                let pos = if drag.dir == crate::layout::SplitDir::Horizontal {
+                    x
+                } else {
+                    y
+                };
+                let delta = pos as i32 - drag.last_pos as i32;
+                if delta != 0 {
+                    if let Some(wid) = state.active_window_for_client(cid) {
+                        let total = if drag.dir == crate::layout::SplitDir::Horizontal {
+                            state.windows.get(&wid).map_or(0, |w| w.sx)
+                        } else {
+                            state.windows.get(&wid).map_or(0, |w| w.sy)
+                        };
+                        if let Some(window) = state.windows.get_mut(&wid)
+                            && window.layout.resize_pane(drag.pane, drag.dir, delta, total)
+                        {
+                            recalc_layout(state, wid);
+                            mark_all_dirty(state);
+                        }
+                    }
+                    if let Some(client) = state.clients.get_mut(&cid)
+                        && let Some(d) = &mut client.border_drag
+                    {
+                        d.last_pos = pos;
+                    }
+                }
+                return InputResult::Redraw;
+            }
+
             // If the active pane wants mouse, forward the drag
             if let Some(pid) = state.active_pane_for_client(cid)
                 && pane_wants_mouse(state, pid)
@@ -1080,6 +1167,18 @@ fn process_mouse(
             InputResult::None
         }
         MouseEvent::Release { .. } => {
+            // End border drag if active
+            if state
+                .clients
+                .get(&cid)
+                .is_some_and(|c| c.border_drag.is_some())
+            {
+                if let Some(client) = state.clients.get_mut(&cid) {
+                    client.border_drag = None;
+                }
+                return InputResult::Redraw;
+            }
+
             // If the active pane wants mouse, forward the release
             if let Some(pid) = state.active_pane_for_client(cid)
                 && pane_wants_mouse(state, pid)

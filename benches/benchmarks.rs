@@ -617,12 +617,15 @@ fn bench_layout_calculate(c: &mut Criterion) {
                     LayoutNode::Pane(PaneId(1)),
                     LayoutNode::Pane(PaneId(2)),
                 ],
+                sizes: Vec::new(),
             },
             LayoutNode::Split {
                 dir: SplitDir::Vertical,
                 children: vec![LayoutNode::Pane(PaneId(3)), LayoutNode::Pane(PaneId(4))],
+                sizes: Vec::new(),
             },
         ],
+        sizes: Vec::new(),
     };
     c.bench_function("layout calculate 5 panes", |b| {
         b.iter(|| black_box(layout.calculate(0, 0, 200, 50)));

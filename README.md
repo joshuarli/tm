@@ -19,6 +19,7 @@ A fast, minimal terminal multiplexer. Three runtime dependencies (libc, mio, any
 - **Status bar** — session name, window list with indices, zoom indicator. Top or bottom positioning. Clickable.
 - **Window management** — create (`prefix+n`), rename (`prefix+r`), reorder (`prefix+arrows`), select by number (`prefix+1-9`).
 - **Pane operations** — kill (`prefix+k`), move to another window (`prefix+m`), break to new window (`prefix+ctrl+n`).
+- **Pane resize** — drag borders with the mouse, or use `prefix+Meta+arrows` to resize by keyboard.
 
 ### Non-features
 
@@ -69,6 +70,7 @@ All bindings require the prefix key first (default: `Ctrl+A`).
 | `Left/Right` | Swap window left/right |
 | `Up/Down` | Focus pane up/down |
 | `Shift+Left/Right` | Focus pane left/right |
+| `Meta+Up/Down/Left/Right` | Resize pane |
 | `\` | Split horizontally |
 | `-` | Split vertically |
 | `z` | Zoom pane |
