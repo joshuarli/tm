@@ -927,11 +927,19 @@ fn handle_pane_death(
 
                 if let Some(session) = state.sessions.get_mut(&sid) {
                     session.windows.retain(|&w| w != wid);
+                    // Clear prev_window if it was the one removed
+                    if session.prev_window == Some(wid) {
+                        session.prev_window = None;
+                    }
                     if session.active_window == wid {
-                        session.active_window = *session
-                            .windows
-                            .first()
-                            .unwrap_or(&crate::state::WindowId(0));
+                        // Prefer the previously active window, fall back to first
+                        let next = session
+                            .prev_window
+                            .filter(|w| session.windows.contains(w))
+                            .or_else(|| session.windows.first().copied())
+                            .unwrap_or(crate::state::WindowId(0));
+                        session.active_window = next;
+                        session.prev_window = None;
                     }
 
                     if session.windows.is_empty() {

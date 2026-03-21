@@ -113,7 +113,11 @@ impl State {
             name: name.to_string(),
             windows: vec![wid],
             active_window: wid,
+            prev_window: None,
             next_window_idx: 2,
+            cwd: std::env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(String::from)),
         };
         self.sessions.insert(sid, session);
         sid
@@ -161,7 +165,19 @@ pub struct Session {
     pub name: String,
     pub windows: Vec<WindowId>,
     pub active_window: WindowId,
+    pub prev_window: Option<WindowId>,
     pub next_window_idx: u32,
+    pub cwd: Option<String>, // original CWD when session was created
+}
+
+impl Session {
+    /// Switch to a new active window, remembering the previous one.
+    pub fn set_active_window(&mut self, wid: WindowId) {
+        if wid != self.active_window {
+            self.prev_window = Some(self.active_window);
+            self.active_window = wid;
+        }
+    }
 }
 
 pub struct Window {

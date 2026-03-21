@@ -329,7 +329,7 @@ fn navigate_window(state: &mut State, cid: ClientId, delta: i32) {
     let new_idx = ((current_idx as i32 + delta) % n + n) % n;
     let new_wid = session.windows[new_idx as usize];
     if let Some(session) = state.sessions.get_mut(&sid) {
-        session.active_window = new_wid;
+        session.set_active_window(new_wid);
     }
     mark_all_dirty(state);
 }
@@ -347,7 +347,7 @@ fn select_window_by_idx(state: &mut State, cid: ClientId, idx: u32) {
             && w.idx == idx
         {
             if let Some(session) = state.sessions.get_mut(&sid) {
-                session.active_window = wid;
+                session.set_active_window(wid);
             }
             mark_all_dirty(state);
             return;
@@ -634,7 +634,7 @@ fn break_pane(state: &mut State, cid: ClientId) {
 
     if let Some(session) = state.sessions.get_mut(&sid) {
         session.windows.push(new_wid);
-        session.active_window = new_wid;
+        session.set_active_window(new_wid);
     }
     if let Some(pane) = state.panes.get_mut(&pid) {
         pane.window = new_wid;
@@ -757,10 +757,8 @@ fn create_new_window(state: &mut State, cid: ClientId, name: &str) -> InputResul
     let pid = state.alloc_pane_id();
     let socket_path = crate::protocol::socket_path();
 
-    let cwd = state
-        .active_pane_for_client(cid)
-        .and_then(|p| state.panes.get(&p))
-        .and_then(|p| p.cwd.clone());
+    // New windows use the session's original CWD
+    let cwd = state.sessions.get(&sid).and_then(|s| s.cwd.clone());
 
     let (master, child_pid) = match crate::pty::spawn_shell(
         sx,
@@ -804,7 +802,7 @@ fn create_new_window(state: &mut State, cid: ClientId, name: &str) -> InputResul
 
     if let Some(session) = state.sessions.get_mut(&sid) {
         session.windows.push(wid);
-        session.active_window = wid;
+        session.set_active_window(wid);
     }
 
     state.renumber_windows(sid);
@@ -1361,7 +1359,7 @@ fn click_status_bar(state: &mut State, cid: ClientId, x: u32) -> InputResult {
         if (x as usize) >= pos && (x as usize) < entry_end {
             // Clicked on this window
             if let Some(session) = state.sessions.get_mut(&sid) {
-                session.active_window = wid;
+                session.set_active_window(wid);
             }
             // Full redraw for window switch
             for pane in state.panes.values_mut() {
