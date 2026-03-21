@@ -251,13 +251,9 @@ impl LayoutNode {
                     .collect();
             }
 
-            // Pick neighbor: grow takes from next, shrink gives to previous
-            let neighbor = if delta > 0 {
-                if idx + 1 < n {
-                    idx + 1
-                } else {
-                    return false;
-                }
+            // Pick neighbor: prefer next sibling, fall back to previous
+            let neighbor = if idx + 1 < n {
+                idx + 1
             } else if idx > 0 {
                 idx - 1
             } else {
@@ -266,13 +262,23 @@ impl LayoutNode {
 
             let abs = delta.unsigned_abs();
             let min_size = 2u32;
-            let actual = abs.min(sizes[neighbor].saturating_sub(min_size));
-            if actual == 0 {
-                return false;
+            if delta > 0 {
+                // Grow this pane, shrink neighbor
+                let actual = abs.min(sizes[neighbor].saturating_sub(min_size));
+                if actual == 0 {
+                    return false;
+                }
+                sizes[idx] += actual;
+                sizes[neighbor] -= actual;
+            } else {
+                // Shrink this pane, grow neighbor
+                let actual = abs.min(sizes[idx].saturating_sub(min_size));
+                if actual == 0 {
+                    return false;
+                }
+                sizes[idx] -= actual;
+                sizes[neighbor] += actual;
             }
-
-            sizes[idx] += actual;
-            sizes[neighbor] -= actual;
             return true;
         }
 
