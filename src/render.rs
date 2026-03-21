@@ -23,18 +23,12 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
     tty.sync_begin();
     tty.cursor_hide();
 
-    // Determine copy mode viewport top (absolute row)
-    let copy_top = if client.mode == ClientMode::CopyMode {
-        Some((client.copy_pane, client.copy_top))
-    } else {
-        None
-    };
-
+    let copy_modes = &client.copy_modes;
     let sel = client.sel;
 
     // Render panes
     if let Some(zoomed_pid) = window.zoomed {
-        let ct = copy_top.and_then(|(p, t)| if p == zoomed_pid { Some(t) } else { None });
+        let ct = copy_modes.get(&zoomed_pid).map(|cs| cs.top);
         let pane_sel = sel.filter(|s| s.pane == zoomed_pid);
         render_pane(
             state,
@@ -51,12 +45,12 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
     } else {
         let geos = window.layout.calculate(0, 0, window.sx, window.sy);
 
-        // Render pane borders
-        render_borders(state, window, &geos, sx, status_row, tty);
+        // Render pane borders (with yellow overlay for copy-mode panes)
+        render_borders(state, window, &geos, copy_modes, sx, status_row, tty);
 
         // Render each pane
         for geo in &geos {
-            let ct = copy_top.and_then(|(p, t)| if p == geo.id { Some(t) } else { None });
+            let ct = copy_modes.get(&geo.id).map(|cs| cs.top);
             let pane_sel = sel.filter(|s| s.pane == geo.id);
             render_pane(
                 state,
@@ -88,7 +82,10 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
     let active_pid = window.active_pane;
     if let Some(pane) = state.panes.get(&active_pid) {
         let screen = pane.active_screen();
-        if screen.mode.has(ScreenMode::CURSOR_VISIBLE) && client.mode == ClientMode::Normal {
+        if screen.mode.has(ScreenMode::CURSOR_VISIBLE)
+            && client.mode == ClientMode::Normal
+            && !client.copy_modes.contains_key(&active_pid)
+        {
             let (xoff, yoff) = if window.zoomed.is_some() {
                 (0, 0)
             } else {
@@ -229,6 +226,7 @@ fn render_borders(
     _state: &State,
     window: &crate::state::Window,
     geos: &[crate::layout::PaneGeometry],
+    copy_modes: &std::collections::HashMap<PaneId, crate::state::CopyState>,
     sx: u32,
     sy: u32,
     tty: &mut TtyWriter,
@@ -242,34 +240,36 @@ fn render_borders(
     // Find the active pane geometry
     let active_geo = geos.iter().find(|g| g.id == active_pid);
 
-    // For each border cell, check if it's adjacent to the active pane
-    let is_active_border = |x: u32, y: u32| -> bool {
-        let Some(ag) = active_geo else {
-            return false;
-        };
-        // Cell is on the active pane's right edge
-        if x == ag.xoff + ag.sx && y >= ag.yoff && y < ag.yoff + ag.sy {
-            return true;
+    // Check which side of a border cell gets priority for coloring
+    let border_attr = |x: u32, y: u32| -> &CellContent {
+        // Check if adjacent to a copy-mode pane (yellow takes priority)
+        for geo in geos {
+            if !copy_modes.contains_key(&geo.id) {
+                continue;
+            }
+            if (x == geo.xoff + geo.sx || x + 1 == geo.xoff)
+                && y >= geo.yoff
+                && y < geo.yoff + geo.sy
+            {
+                return &YELLOW_BORDER;
+            }
+            if (y == geo.yoff + geo.sy || y + 1 == geo.yoff)
+                && x >= geo.xoff
+                && x < geo.xoff + geo.sx
+            {
+                return &YELLOW_BORDER;
+            }
         }
-        // Cell is on the active pane's left edge
-        if x + 1 == ag.xoff && y >= ag.yoff && y < ag.yoff + ag.sy {
-            return true;
+        // Check if adjacent to the active pane (green)
+        if let Some(ag) = active_geo {
+            if (x == ag.xoff + ag.sx || x + 1 == ag.xoff) && y >= ag.yoff && y < ag.yoff + ag.sy {
+                return &GREEN_BORDER;
+            }
+            if (y == ag.yoff + ag.sy || y + 1 == ag.yoff) && x >= ag.xoff && x < ag.xoff + ag.sx {
+                return &GREEN_BORDER;
+            }
         }
-        // Cell is on the active pane's bottom edge
-        if y == ag.yoff + ag.sy && x >= ag.xoff && x < ag.xoff + ag.sx {
-            return true;
-        }
-        // Cell is on the active pane's top edge
-        if y + 1 == ag.yoff && x >= ag.xoff && x < ag.xoff + ag.sx {
-            return true;
-        }
-        false
-    };
-
-    let dim_border = CellContent::default();
-    let green_border = CellContent {
-        fg: Color::Palette(2),
-        ..CellContent::default()
+        &DIM_BORDER
     };
 
     for geo in geos {
@@ -279,11 +279,7 @@ fn render_borders(
             for row in geo.yoff..geo.yoff + geo.sy {
                 if row < sy {
                     tty.cursor_goto(row, right_x);
-                    tty.set_cell_attrs(if is_active_border(right_x, row) {
-                        &green_border
-                    } else {
-                        &dim_border
-                    });
+                    tty.set_cell_attrs(border_attr(right_x, row));
                     tty.write_str("\u{2502}"); // │
                 }
             }
@@ -294,26 +290,46 @@ fn render_borders(
         if bottom_y < sy {
             for col in geo.xoff..geo.xoff + geo.sx {
                 tty.cursor_goto(bottom_y, col);
-                tty.set_cell_attrs(if is_active_border(col, bottom_y) {
-                    &green_border
-                } else {
-                    &dim_border
-                });
+                tty.set_cell_attrs(border_attr(col, bottom_y));
                 tty.write_str("\u{2500}"); // ─
             }
             // Corner/intersection
             if geo.xoff + geo.sx < sx {
                 tty.cursor_goto(bottom_y, geo.xoff + geo.sx);
-                tty.set_cell_attrs(if is_active_border(geo.xoff + geo.sx, bottom_y) {
-                    &green_border
-                } else {
-                    &dim_border
-                });
+                tty.set_cell_attrs(border_attr(geo.xoff + geo.sx, bottom_y));
                 tty.write_str("\u{253C}"); // ┼
             }
         }
     }
 }
+
+const DIM_BORDER: CellContent = CellContent {
+    ch: [0; 8],
+    ch_len: 0,
+    ch_width: 0,
+    fg: Color::Default,
+    bg: Color::Default,
+    us: Color::Default,
+    attr: CellAttr(0),
+};
+const GREEN_BORDER: CellContent = CellContent {
+    ch: [0; 8],
+    ch_len: 0,
+    ch_width: 0,
+    fg: Color::Palette(2),
+    bg: Color::Default,
+    us: Color::Default,
+    attr: CellAttr(0),
+};
+const YELLOW_BORDER: CellContent = CellContent {
+    ch: [0; 8],
+    ch_len: 0,
+    ch_width: 0,
+    fg: Color::Palette(3),
+    bg: Color::Default,
+    us: Color::Default,
+    attr: CellAttr(0),
+};
 
 fn render_status(
     state: &State,
@@ -402,7 +418,7 @@ fn render_status(
     pos += session.name.len() + 2;
 
     // Copy mode indicator
-    if client.mode == ClientMode::CopyMode {
+    if !client.copy_modes.is_empty() {
         tty.set_cell_attrs(&CellContent {
             fg: Color::Palette(3), // yellow
             bg: config.status_bg,

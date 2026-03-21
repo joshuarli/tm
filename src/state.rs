@@ -300,8 +300,13 @@ impl Selection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientMode {
     Normal,
-    CopyMode,
     CommandPrompt,
+}
+
+/// Per-pane copy mode state for a client.
+pub struct CopyState {
+    pub top: u32,
+    pub scroll_deferred: i32,
 }
 
 pub struct Client {
@@ -317,10 +322,8 @@ pub struct Client {
     pub key_buf: Vec<u8>,
     pub output_buf: Vec<u8>,
     pub mode: ClientMode,
-    pub copy_top: u32,          // absolute row of viewport top in copy mode
-    pub copy_pane: PaneId,      // which pane is being scrolled
-    pub scroll_deferred: i32,   // accumulated scroll delta (coalesced over 16ms)
-    pub sel: Option<Selection>, // click-drag text selection
+    pub copy_modes: HashMap<PaneId, CopyState>, // per-pane copy/scroll state
+    pub sel: Option<Selection>,                 // click-drag text selection
     pub status_message: Option<(String, Instant)>,
     pub prompt_buf: Option<String>,
     pub prompt_action: Option<PromptAction>,
@@ -356,9 +359,7 @@ impl Client {
             key_buf: Vec::new(),
             output_buf: Vec::new(),
             mode: ClientMode::Normal,
-            copy_top: 0,
-            copy_pane: PaneId(0),
-            scroll_deferred: 0,
+            copy_modes: HashMap::new(),
             sel: None,
             status_message: None,
             prompt_buf: None,

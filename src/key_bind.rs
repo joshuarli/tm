@@ -39,13 +39,11 @@ pub fn process_input(
         return process_prompt_input(state, config, cid, event);
     }
 
-    // Copy mode — only intercept input when the active pane is the copy pane.
-    // Clicking/typing in another pane should work normally without exiting copy mode.
-    if client.mode == ClientMode::CopyMode {
-        let active = state.active_pane_for_client(cid);
-        if active == Some(client.copy_pane) {
-            return process_copy_input(state, config, cid, event);
-        }
+    // Copy mode — if the active pane is in copy mode, intercept input for it.
+    if let Some(pid) = state.active_pane_for_client(cid)
+        && client.copy_modes.contains_key(&pid)
+    {
+        return process_copy_input(state, config, cid, pid, event);
     }
 
     // Check for prefix key
@@ -272,8 +270,8 @@ fn dispatch_action(
             InputResult::Redraw
         }
         Action::CopyMode => {
-            if let Some(client) = state.clients.get_mut(&cid) {
-                client.mode = ClientMode::CopyMode;
+            if let Some(pid) = state.active_pane_for_client(cid) {
+                enter_copy_mode(state, cid, pid);
             }
             InputResult::Redraw
         }
@@ -864,92 +862,104 @@ fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
         .map(|p| p.active_screen().grid.hsize())
         .unwrap_or(0);
     if let Some(client) = state.clients.get_mut(&cid) {
-        client.mode = ClientMode::CopyMode;
-        client.copy_top = top;
-        client.copy_pane = pane_id;
+        client
+            .copy_modes
+            .entry(pane_id)
+            .or_insert(crate::state::CopyState {
+                top,
+                scroll_deferred: 0,
+            });
     }
 }
 
-fn exit_copy_mode(state: &mut State, cid: ClientId) {
+fn exit_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
     if let Some(client) = state.clients.get_mut(&cid) {
-        client.mode = ClientMode::Normal;
-        client.copy_top = 0;
-        client.scroll_deferred = 0;
-        client.sel = None;
+        client.copy_modes.remove(&pane_id);
+        if client.sel.is_some_and(|s| s.pane == pane_id) {
+            client.sel = None;
+        }
     }
     mark_all_dirty(state);
     clear_client_screen(state, cid);
 }
 
-fn copy_scroll(state: &mut State, cid: ClientId, delta: i32) -> InputResult {
+fn copy_scroll(state: &mut State, cid: ClientId, pid: PaneId, delta: i32) -> InputResult {
     // Accumulate scroll delta — flushed by the server on the 16ms render tick.
     // This coalesces rapid wheel events into a single scroll + render.
-    if let Some(client) = state.clients.get_mut(&cid) {
-        client.scroll_deferred += delta;
+    if let Some(client) = state.clients.get_mut(&cid)
+        && let Some(cs) = client.copy_modes.get_mut(&pid)
+    {
+        cs.scroll_deferred += delta;
     }
     // Don't return Redraw — the server's tick loop flushes deferred scrolls.
     InputResult::None
 }
 
-/// Flush any accumulated scroll delta. Called from the server's render tick.
+/// Flush any accumulated scroll deltas. Called from the server's render tick.
 /// Returns true if a redraw is needed.
 pub fn flush_scroll(state: &mut State, cid: ClientId) -> bool {
     let Some(client) = state.clients.get(&cid) else {
         return false;
     };
-    if client.mode != ClientMode::CopyMode || client.scroll_deferred == 0 {
+
+    // Collect panes that need flushing
+    let to_flush: Vec<(PaneId, u32, i32)> = client
+        .copy_modes
+        .iter()
+        .filter(|(_, cs)| cs.scroll_deferred != 0)
+        .map(|(&pid, cs)| (pid, cs.top, cs.scroll_deferred))
+        .collect();
+
+    if to_flush.is_empty() {
         return false;
     }
 
-    let delta = client.scroll_deferred;
-    let pane_id = client.copy_pane;
-    let top = client.copy_top;
+    let mut need_redraw = false;
+    for (pid, top, delta) in to_flush {
+        let hsize = state
+            .panes
+            .get(&pid)
+            .map(|p| p.active_screen().grid.hsize())
+            .unwrap_or(0);
 
-    let hsize = state
-        .panes
-        .get(&pane_id)
-        .map(|p| p.active_screen().grid.hsize())
-        .unwrap_or(0);
+        // Positive delta = scroll up (older lines = lower absolute row)
+        // Negative delta = scroll down (newer lines = higher absolute row)
+        let new_top = if delta > 0 {
+            top.saturating_sub(delta as u32)
+        } else {
+            top.saturating_add((-delta) as u32)
+        };
 
-    // Positive delta = scroll up (older lines = lower absolute row)
-    // Negative delta = scroll down (newer lines = higher absolute row)
-    let new_top = if delta > 0 {
-        top.saturating_sub(delta as u32)
-    } else {
-        top.saturating_add((-delta) as u32)
-    };
-
-    if let Some(client) = state.clients.get_mut(&cid) {
-        client.scroll_deferred = 0;
-    }
-
-    if new_top >= hsize {
-        exit_copy_mode(state, cid);
-        true
-    } else {
-        if let Some(client) = state.clients.get_mut(&cid) {
-            client.copy_top = new_top;
+        if new_top >= hsize {
+            exit_copy_mode(state, cid, pid);
+        } else if let Some(client) = state.clients.get_mut(&cid)
+            && let Some(cs) = client.copy_modes.get_mut(&pid)
+        {
+            cs.top = new_top;
+            cs.scroll_deferred = 0;
         }
-        true
+        need_redraw = true;
     }
+    need_redraw
 }
 
 fn process_copy_input(
     state: &mut State,
     config: &Config,
     cid: ClientId,
+    pid: PaneId,
     event: InputEvent,
 ) -> InputResult {
     match event {
         InputEvent::Key(_) => {
-            exit_copy_mode(state, cid);
+            exit_copy_mode(state, cid, pid);
             InputResult::Redraw
         }
         InputEvent::Mouse(MouseEvent::WheelUp { .. }) => {
-            copy_scroll(state, cid, SCROLL_LINES as i32)
+            copy_scroll(state, cid, pid, SCROLL_LINES as i32)
         }
         InputEvent::Mouse(MouseEvent::WheelDown { .. }) => {
-            copy_scroll(state, cid, -(SCROLL_LINES as i32))
+            copy_scroll(state, cid, pid, -(SCROLL_LINES as i32))
         }
         InputEvent::Mouse(mouse) => {
             // Delegate press/drag/release to normal mouse handler for selection
@@ -1007,14 +1017,13 @@ fn process_mouse(
             if let Some(pane) = state.panes.get(&pid) {
                 let local_col = x.saturating_sub(pane.xoff);
                 let local_row = y.saturating_sub(pane.yoff);
-                let client = state.clients.get(&cid);
-                let abs_row = if client
-                    .is_some_and(|c| c.mode == ClientMode::CopyMode && c.copy_pane == pid)
-                {
-                    client.unwrap().copy_top + local_row
-                } else {
-                    pane.active_screen().grid.hsize() + local_row
-                };
+                let copy_top = state
+                    .clients
+                    .get(&cid)
+                    .and_then(|c| c.copy_modes.get(&pid))
+                    .map(|cs| cs.top);
+                let abs_row =
+                    copy_top.unwrap_or_else(|| pane.active_screen().grid.hsize()) + local_row;
                 if let Some(client) = state.clients.get_mut(&cid) {
                     client.sel = Some(crate::state::Selection {
                         pane: pid,
@@ -1046,21 +1055,20 @@ fn process_mouse(
             let pid = sel.pane;
 
             // Enter copy mode if not already in it
-            if client.mode != ClientMode::CopyMode {
+            if !client.copy_modes.contains_key(&pid) {
                 enter_copy_mode(state, cid, pid);
             }
 
             if let Some(pane) = state.panes.get(&pid) {
                 let local_col = x.saturating_sub(pane.xoff).min(pane.sx.saturating_sub(1));
                 let local_row = y.saturating_sub(pane.yoff).min(pane.sy.saturating_sub(1));
-                let client = state.clients.get(&cid);
-                let abs_row = if client
-                    .is_some_and(|c| c.mode == ClientMode::CopyMode && c.copy_pane == pid)
-                {
-                    client.unwrap().copy_top + local_row
-                } else {
-                    pane.active_screen().grid.hsize() + local_row
-                };
+                let copy_top = state
+                    .clients
+                    .get(&cid)
+                    .and_then(|c| c.copy_modes.get(&pid))
+                    .map(|cs| cs.top);
+                let abs_row =
+                    copy_top.unwrap_or_else(|| pane.active_screen().grid.hsize()) + local_row;
                 if let Some(client) = state.clients.get_mut(&cid)
                     && let Some(sel) = &mut client.sel
                 {
@@ -1098,17 +1106,16 @@ fn process_mouse(
             };
 
             // Clear selection and exit copy mode (full redraw)
-            let copy_pane = state
+            let in_copy = state
                 .clients
                 .get(&cid)
-                .filter(|c| c.mode == ClientMode::CopyMode)
-                .map(|c| c.copy_pane);
+                .is_some_and(|c| c.copy_modes.contains_key(&pid));
             if let Some(client) = state.clients.get_mut(&cid) {
                 client.sel = None;
             }
-            if copy_pane == Some(pid) {
-                // Release on the copy pane — exit copy mode
-                exit_copy_mode(state, cid);
+            if in_copy {
+                // Release on a copy-mode pane — exit copy mode for it
+                exit_copy_mode(state, cid, pid);
             } else {
                 // Even without copy mode, need full redraw to clear highlight
                 mark_all_dirty(state);
@@ -1135,7 +1142,7 @@ fn process_mouse(
             }
             // Normal screen without mouse tracking: enter copy mode and scroll
             enter_copy_mode(state, cid, pid);
-            copy_scroll(state, cid, SCROLL_LINES as i32)
+            copy_scroll(state, cid, pid, SCROLL_LINES as i32)
         }
         MouseEvent::WheelDown { x, y } => {
             let Some(pid) = find_pane_at(state, cid, x, y) else {
@@ -1143,6 +1150,14 @@ fn process_mouse(
             };
             if pane_wants_mouse(state, pid) {
                 return forward_mouse_to_pane(state, pid, &mouse);
+            }
+            // Scroll down in copy mode if this pane is in it
+            let in_copy = state
+                .clients
+                .get(&cid)
+                .is_some_and(|c| c.copy_modes.contains_key(&pid));
+            if in_copy {
+                return copy_scroll(state, cid, pid, -(SCROLL_LINES as i32));
             }
             InputResult::None
         }
@@ -1689,12 +1704,12 @@ mod tests {
 
     #[test]
     fn enter_copy_mode_via_action() {
-        let (mut state, config, cid, _pid, _wid, _sid) = setup();
+        let (mut state, config, cid, pid, _wid, _sid) = setup();
 
         // Prefix + CopyMode binding doesn't exist by default, so invoke dispatch directly
         let result = dispatch_action(&mut state, &config, cid, Action::CopyMode);
         assert!(is_redraw(&result));
-        assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
+        assert!(state.clients[&cid].copy_modes.contains_key(&pid));
     }
 
     #[test]
@@ -1703,7 +1718,7 @@ mod tests {
 
         // Enter copy mode
         enter_copy_mode(&mut state, cid, pid);
-        assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
+        assert!(state.clients[&cid].copy_modes.contains_key(&pid));
 
         // Any key exits copy mode
         let result = process_input(
@@ -1713,7 +1728,7 @@ mod tests {
             InputEvent::Key(KeyCode::char('q')),
         );
         assert!(is_redraw(&result));
-        assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
+        assert!(!state.clients[&cid].copy_modes.contains_key(&pid));
     }
 
     #[test]
@@ -1728,13 +1743,13 @@ mod tests {
         assert!(hsize >= 3, "need history for scroll test");
 
         enter_copy_mode(&mut state, cid, pid);
-        assert_eq!(state.clients[&cid].copy_top, hsize);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].top, hsize);
 
-        copy_scroll(&mut state, cid, 3);
+        copy_scroll(&mut state, cid, pid, 3);
         // Flush deferred scroll
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].copy_top, hsize - 3);
-        assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].top, hsize - 3);
+        assert!(state.clients[&cid].copy_modes.contains_key(&pid));
     }
 
     #[test]
@@ -1749,12 +1764,18 @@ mod tests {
 
         enter_copy_mode(&mut state, cid, pid);
         // Scroll up 2 lines then back down past the bottom
-        state.clients.get_mut(&cid).unwrap().copy_top = hsize - 2;
+        state
+            .clients
+            .get_mut(&cid)
+            .unwrap()
+            .copy_modes
+            .get_mut(&pid)
+            .unwrap()
+            .top = hsize - 2;
 
-        copy_scroll(&mut state, cid, -5);
+        copy_scroll(&mut state, cid, pid, -5);
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
-        assert_eq!(state.clients[&cid].copy_top, 0);
+        assert!(!state.clients[&cid].copy_modes.contains_key(&pid));
     }
 
     #[test]
@@ -1769,9 +1790,9 @@ mod tests {
         enter_copy_mode(&mut state, cid, pid);
 
         // Try to scroll far past the top of history
-        copy_scroll(&mut state, cid, 1000);
+        copy_scroll(&mut state, cid, pid, 1000);
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].copy_top, 0);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].top, 0);
     }
 
     #[test]
@@ -1785,19 +1806,19 @@ mod tests {
         let hsize = state.panes[&pid].screen.grid.hsize();
 
         enter_copy_mode(&mut state, cid, pid);
-        assert_eq!(state.clients[&cid].copy_top, hsize);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].top, hsize);
 
         // Multiple scroll events before flush — should coalesce
-        copy_scroll(&mut state, cid, 3);
-        copy_scroll(&mut state, cid, 3);
-        copy_scroll(&mut state, cid, 3);
-        assert_eq!(state.clients[&cid].scroll_deferred, 9);
-        assert_eq!(state.clients[&cid].copy_top, hsize); // not applied yet
+        copy_scroll(&mut state, cid, pid, 3);
+        copy_scroll(&mut state, cid, pid, 3);
+        copy_scroll(&mut state, cid, pid, 3);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].scroll_deferred, 9);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].top, hsize); // not applied yet
 
         // Single flush applies the accumulated delta
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].copy_top, hsize - 9);
-        assert_eq!(state.clients[&cid].scroll_deferred, 0);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].top, hsize - 9);
+        assert_eq!(state.clients[&cid].copy_modes[&pid].scroll_deferred, 0);
     }
 
     // =======================================================================
