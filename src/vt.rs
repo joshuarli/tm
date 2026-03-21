@@ -591,6 +591,7 @@ impl VtParser {
     fn csi_dispatch(&mut self, pane: &mut PaneScreenAccess, byte: u8, actions: &mut Vec<VtAction>) {
         let is_private = self.intermediates.first() == Some(&b'?');
         let is_gt = self.intermediates.first() == Some(&b'>');
+        let is_lt = self.intermediates.first() == Some(&b'<');
         let p = |idx: usize, default: u32| -> u32 {
             self.params
                 .get(idx)
@@ -806,7 +807,13 @@ impl VtParser {
                 }
             }
             b'u' => {
-                if !is_private {
+                if is_gt {
+                    // CSI > flags u — kitty keyboard protocol: push mode
+                    pane.screen_mut().mode.set(ScreenMode::EXTENDED_KEYS);
+                } else if is_lt {
+                    // CSI < u — kitty keyboard protocol: pop mode
+                    pane.screen_mut().mode.clear(ScreenMode::EXTENDED_KEYS);
+                } else if !is_private {
                     // SCORC — restore cursor
                     pane.screen_mut().restore_cursor();
                 }
