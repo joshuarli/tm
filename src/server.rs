@@ -643,7 +643,36 @@ fn handle_input(
     force_render: &mut bool,
     input_events: &mut Vec<keys::InputEvent>,
 ) {
-    keys::parse_input_into(data, input_events);
+    // Prepend any leftover bytes from a previous partial parse (e.g. split paste)
+    let has_leftover = state
+        .clients
+        .get(&cid)
+        .is_some_and(|c| !c.key_buf.is_empty());
+    let consumed = if has_leftover {
+        let client = state.clients.get_mut(&cid).unwrap();
+        client.key_buf.extend_from_slice(data);
+        let combined_len = client.key_buf.len();
+        // Safety: take ownership to avoid borrow conflict with parse_input_into
+        let mut buf = std::mem::take(&mut client.key_buf);
+        let consumed = keys::parse_input_into(&buf, input_events);
+        if consumed < combined_len {
+            // Put unconsumed tail back
+            let client = state.clients.get_mut(&cid).unwrap();
+            client.key_buf = buf.split_off(consumed);
+        }
+        // consumed is handled; no further tracking needed
+        0 // sentinel — events already parsed
+    } else {
+        keys::parse_input_into(data, input_events)
+    };
+
+    // Buffer unconsumed bytes from a fresh (no-leftover) parse
+    if !has_leftover
+        && consumed < data.len()
+        && let Some(client) = state.clients.get_mut(&cid)
+    {
+        client.key_buf.extend_from_slice(&data[consumed..]);
+    }
 
     for event in input_events.drain(..) {
         let result = key_bind::process_input(state, config, cid, event);

@@ -314,6 +314,7 @@ pub struct Client {
     pub prefix_active: bool,
     pub repeat_deadline: Option<Instant>,
     pub input_buf: Vec<u8>,
+    pub key_buf: Vec<u8>,
     pub output_buf: Vec<u8>,
     pub mode: ClientMode,
     pub copy_top: u32,          // absolute row of viewport top in copy mode
@@ -352,6 +353,7 @@ impl Client {
             prefix_active: false,
             repeat_deadline: None,
             input_buf: Vec::new(),
+            key_buf: Vec::new(),
             output_buf: Vec::new(),
             mode: ClientMode::Normal,
             copy_top: 0,
