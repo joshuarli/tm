@@ -23,9 +23,9 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
     tty.sync_begin();
     tty.cursor_hide();
 
-    // Determine copy mode scroll offset
-    let copy_oy = if client.mode == ClientMode::CopyMode {
-        Some((client.copy_pane, client.copy_oy))
+    // Determine copy mode viewport top (absolute row)
+    let copy_top = if client.mode == ClientMode::CopyMode {
+        Some((client.copy_pane, client.copy_top))
     } else {
         None
     };
@@ -34,9 +34,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
 
     // Render panes
     if let Some(zoomed_pid) = window.zoomed {
-        let oy = copy_oy
-            .and_then(|(p, o)| if p == zoomed_pid { Some(o) } else { None })
-            .unwrap_or(0);
+        let ct = copy_top.and_then(|(p, t)| if p == zoomed_pid { Some(t) } else { None });
         let pane_sel = sel.filter(|s| s.pane == zoomed_pid);
         render_pane(
             state,
@@ -45,7 +43,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
             0,
             sx,
             status_row,
-            oy,
+            ct,
             pane_sel.as_ref(),
             sx,
             tty,
@@ -58,9 +56,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
 
         // Render each pane
         for geo in &geos {
-            let oy = copy_oy
-                .and_then(|(p, o)| if p == geo.id { Some(o) } else { None })
-                .unwrap_or(0);
+            let ct = copy_top.and_then(|(p, t)| if p == geo.id { Some(t) } else { None });
             let pane_sel = sel.filter(|s| s.pane == geo.id);
             render_pane(
                 state,
@@ -69,7 +65,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
                 geo.yoff,
                 geo.sx,
                 geo.sy,
-                oy,
+                ct,
                 pane_sel.as_ref(),
                 sx,
                 tty,
@@ -115,7 +111,7 @@ fn render_pane(
     yoff: u32,
     sx: u32,
     sy: u32,
-    copy_oy: u32,
+    copy_top: Option<u32>,
     sel: Option<&crate::state::Selection>,
     client_sx: u32,
     tty: &mut TtyWriter,
@@ -126,7 +122,7 @@ fn render_pane(
     let screen = pane.active_screen();
     let grid = &screen.grid;
     let force =
-        pane.flags.contains(crate::state::PaneFlags::REDRAW) || copy_oy > 0 || sel.is_some();
+        pane.flags.contains(crate::state::PaneFlags::REDRAW) || copy_top.is_some() || sel.is_some();
 
     // Scroll optimization: when the grid has pending full-screen scrolls and
     // the pane spans the full terminal width, emit CSI S to scroll the terminal
@@ -146,8 +142,8 @@ fn render_pane(
 
     for row in 0..sy {
         // Compute absolute grid row for this viewport line
-        let abs_row = if copy_oy > 0 {
-            (grid.hsize() as i64 - copy_oy as i64 + row as i64) as u32
+        let abs_row = if let Some(top) = copy_top {
+            top + row
         } else {
             grid.hsize() + row
         };

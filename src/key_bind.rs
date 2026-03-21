@@ -858,9 +858,14 @@ fn execute_command(state: &mut State, cid: ClientId, input: &str) -> InputResult
 const SCROLL_LINES: u32 = 3;
 
 fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
+    let top = state
+        .panes
+        .get(&pane_id)
+        .map(|p| p.active_screen().grid.hsize())
+        .unwrap_or(0);
     if let Some(client) = state.clients.get_mut(&cid) {
         client.mode = ClientMode::CopyMode;
-        client.copy_oy = 0;
+        client.copy_top = top;
         client.copy_pane = pane_id;
     }
 }
@@ -868,7 +873,7 @@ fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
 fn exit_copy_mode(state: &mut State, cid: ClientId) {
     if let Some(client) = state.clients.get_mut(&cid) {
         client.mode = ClientMode::Normal;
-        client.copy_oy = 0;
+        client.copy_top = 0;
         client.scroll_deferred = 0;
         client.sel = None;
     }
@@ -898,30 +903,32 @@ pub fn flush_scroll(state: &mut State, cid: ClientId) -> bool {
 
     let delta = client.scroll_deferred;
     let pane_id = client.copy_pane;
-    let oy = client.copy_oy;
+    let top = client.copy_top;
 
-    let max_oy = state
+    let hsize = state
         .panes
         .get(&pane_id)
         .map(|p| p.active_screen().grid.hsize())
         .unwrap_or(0);
 
-    let new_oy = if delta > 0 {
-        oy.saturating_add(delta as u32).min(max_oy)
+    // Positive delta = scroll up (older lines = lower absolute row)
+    // Negative delta = scroll down (newer lines = higher absolute row)
+    let new_top = if delta > 0 {
+        top.saturating_sub(delta as u32)
     } else {
-        oy.saturating_sub((-delta) as u32)
+        top.saturating_add((-delta) as u32)
     };
 
     if let Some(client) = state.clients.get_mut(&cid) {
         client.scroll_deferred = 0;
     }
 
-    if new_oy == 0 {
+    if new_top >= hsize {
         exit_copy_mode(state, cid);
         true
     } else {
         if let Some(client) = state.clients.get_mut(&cid) {
-            client.copy_oy = new_oy;
+            client.copy_top = new_top;
         }
         true
     }
@@ -1000,8 +1007,14 @@ fn process_mouse(
             if let Some(pane) = state.panes.get(&pid) {
                 let local_col = x.saturating_sub(pane.xoff);
                 let local_row = y.saturating_sub(pane.yoff);
-                let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
-                let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
+                let client = state.clients.get(&cid);
+                let abs_row = if client
+                    .is_some_and(|c| c.mode == ClientMode::CopyMode && c.copy_pane == pid)
+                {
+                    client.unwrap().copy_top + local_row
+                } else {
+                    pane.active_screen().grid.hsize() + local_row
+                };
                 if let Some(client) = state.clients.get_mut(&cid) {
                     client.sel = Some(crate::state::Selection {
                         pane: pid,
@@ -1040,8 +1053,14 @@ fn process_mouse(
             if let Some(pane) = state.panes.get(&pid) {
                 let local_col = x.saturating_sub(pane.xoff).min(pane.sx.saturating_sub(1));
                 let local_row = y.saturating_sub(pane.yoff).min(pane.sy.saturating_sub(1));
-                let oy = state.clients.get(&cid).map_or(0, |c| c.copy_oy);
-                let abs_row = pane.active_screen().grid.hsize().saturating_sub(oy) + local_row;
+                let client = state.clients.get(&cid);
+                let abs_row = if client
+                    .is_some_and(|c| c.mode == ClientMode::CopyMode && c.copy_pane == pid)
+                {
+                    client.unwrap().copy_top + local_row
+                } else {
+                    pane.active_screen().grid.hsize() + local_row
+                };
                 if let Some(client) = state.clients.get_mut(&cid)
                     && let Some(sel) = &mut client.sel
                 {
@@ -1698,7 +1717,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_scroll_up_increases_offset() {
+    fn copy_scroll_up_decreases_top() {
         let (mut state, _config, cid, pid, _wid, _sid) = setup();
 
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
@@ -1709,48 +1728,50 @@ mod tests {
         assert!(hsize >= 3, "need history for scroll test");
 
         enter_copy_mode(&mut state, cid, pid);
+        assert_eq!(state.clients[&cid].copy_top, hsize);
 
         copy_scroll(&mut state, cid, 3);
         // Flush deferred scroll
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].copy_oy, 3);
+        assert_eq!(state.clients[&cid].copy_top, hsize - 3);
         assert_eq!(state.clients[&cid].mode, ClientMode::CopyMode);
     }
 
     #[test]
-    fn copy_scroll_down_to_zero_exits_copy_mode() {
+    fn copy_scroll_down_to_bottom_exits_copy_mode() {
         let (mut state, _config, cid, pid, _wid, _sid) = setup();
 
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
         for _ in 0..10 {
             grid.scroll_up(0, grid.sy - 1);
         }
+        let hsize = state.panes[&pid].screen.grid.hsize();
 
         enter_copy_mode(&mut state, cid, pid);
-        state.clients.get_mut(&cid).unwrap().copy_oy = 2;
+        // Scroll up 2 lines then back down past the bottom
+        state.clients.get_mut(&cid).unwrap().copy_top = hsize - 2;
 
         copy_scroll(&mut state, cid, -5);
         assert!(flush_scroll(&mut state, cid));
         assert_eq!(state.clients[&cid].mode, ClientMode::Normal);
-        assert_eq!(state.clients[&cid].copy_oy, 0);
+        assert_eq!(state.clients[&cid].copy_top, 0);
     }
 
     #[test]
-    fn copy_scroll_clamped_to_max_history() {
+    fn copy_scroll_clamped_to_zero() {
         let (mut state, _config, cid, pid, _wid, _sid) = setup();
 
         let grid = &mut state.panes.get_mut(&pid).unwrap().screen.grid;
         for _ in 0..5 {
             grid.scroll_up(0, grid.sy - 1);
         }
-        let hsize = state.panes[&pid].screen.grid.hsize();
 
         enter_copy_mode(&mut state, cid, pid);
 
-        // Try to scroll far past history
+        // Try to scroll far past the top of history
         copy_scroll(&mut state, cid, 1000);
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].copy_oy, hsize);
+        assert_eq!(state.clients[&cid].copy_top, 0);
     }
 
     #[test]
@@ -1761,19 +1782,21 @@ mod tests {
         for _ in 0..20 {
             grid.scroll_up(0, grid.sy - 1);
         }
+        let hsize = state.panes[&pid].screen.grid.hsize();
 
         enter_copy_mode(&mut state, cid, pid);
+        assert_eq!(state.clients[&cid].copy_top, hsize);
 
         // Multiple scroll events before flush — should coalesce
         copy_scroll(&mut state, cid, 3);
         copy_scroll(&mut state, cid, 3);
         copy_scroll(&mut state, cid, 3);
         assert_eq!(state.clients[&cid].scroll_deferred, 9);
-        assert_eq!(state.clients[&cid].copy_oy, 0); // not applied yet
+        assert_eq!(state.clients[&cid].copy_top, hsize); // not applied yet
 
         // Single flush applies the accumulated delta
         assert!(flush_scroll(&mut state, cid));
-        assert_eq!(state.clients[&cid].copy_oy, 9);
+        assert_eq!(state.clients[&cid].copy_top, hsize - 9);
         assert_eq!(state.clients[&cid].scroll_deferred, 0);
     }
 

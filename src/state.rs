@@ -316,7 +316,7 @@ pub struct Client {
     pub input_buf: Vec<u8>,
     pub output_buf: Vec<u8>,
     pub mode: ClientMode,
-    pub copy_oy: u32,           // scroll offset in copy mode (lines from bottom)
+    pub copy_top: u32,          // absolute row of viewport top in copy mode
     pub copy_pane: PaneId,      // which pane is being scrolled
     pub scroll_deferred: i32,   // accumulated scroll delta (coalesced over 16ms)
     pub sel: Option<Selection>, // click-drag text selection
@@ -354,7 +354,7 @@ impl Client {
             input_buf: Vec::new(),
             output_buf: Vec::new(),
             mode: ClientMode::Normal,
-            copy_oy: 0,
+            copy_top: 0,
             copy_pane: PaneId(0),
             scroll_deferred: 0,
             sel: None,
