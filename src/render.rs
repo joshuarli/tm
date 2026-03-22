@@ -365,7 +365,7 @@ fn render_status(
     if let Some((msg, _)) = &client.status_message {
         tty.reset_attrs();
         tty.set_cell_attrs(&CellContent {
-            fg: Color::Palette(3), // yellow
+            fg: Color::Palette(6), // cyan
             bg: Color::Default,
             ..CellContent::default()
         });
@@ -419,7 +419,7 @@ fn render_status(
     // Session name: (name)
     if client.prefix_active {
         tty.set_cell_attrs(&CellContent {
-            fg: Color::Palette(3), // yellow
+            fg: Color::Palette(6), // cyan
             bg: config.status_bg,
             ..CellContent::default()
         });
@@ -428,18 +428,6 @@ fn render_status(
     tty.write_str(&session.name);
     tty.write_raw(b")");
     pos += session.name.len() + 2;
-
-    // Copy mode indicator
-    if !client.copy_modes.is_empty() {
-        tty.set_cell_attrs(&CellContent {
-            fg: Color::Palette(3), // yellow
-            bg: config.status_bg,
-            attr: CellAttr(CellAttr::BOLD),
-            ..CellContent::default()
-        });
-        tty.write_str("(copy)");
-        pos += 6;
-    }
 
     // Reset color for window list
     tty.set_cell_attrs(&CellContent {
