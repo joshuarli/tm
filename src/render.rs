@@ -26,9 +26,21 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
     let copy_modes = &client.copy_modes;
     let sel = client.sel;
 
+    // Compute adjusted copy_top for a pane, accounting for pruned history lines
+    let adjusted_copy_top = |pid: PaneId| -> Option<u32> {
+        let cs = copy_modes.get(&pid)?;
+        let pruned_since = state
+            .panes
+            .get(&pid)
+            .map(|p| p.active_screen().grid.lines_pruned)
+            .unwrap_or(cs.pruned_at);
+        let drift = (pruned_since - cs.pruned_at) as u32;
+        Some(cs.top.saturating_sub(drift))
+    };
+
     // Render panes
     if let Some(zoomed_pid) = window.zoomed {
-        let ct = copy_modes.get(&zoomed_pid).map(|cs| cs.top);
+        let ct = adjusted_copy_top(zoomed_pid);
         let pane_sel = sel.filter(|s| s.pane == zoomed_pid);
         render_pane(
             state,
@@ -50,7 +62,7 @@ pub fn render_client(state: &State, config: &Config, cid: ClientId, tty: &mut Tt
 
         // Render each pane
         for geo in &geos {
-            let ct = copy_modes.get(&geo.id).map(|cs| cs.top);
+            let ct = adjusted_copy_top(geo.id);
             let pane_sel = sel.filter(|s| s.pane == geo.id);
             render_pane(
                 state,

@@ -386,6 +386,9 @@ pub struct Grid {
     /// Full-screen scroll-ups since last render. Used by the renderer to emit
     /// terminal scroll commands instead of repainting shifted lines.
     pub scroll_pending: u32,
+    /// Total lines pruned from the front of the ring buffer since creation.
+    /// Used to adjust absolute row indices in copy mode.
+    pub lines_pruned: u64,
 }
 
 impl Grid {
@@ -400,6 +403,7 @@ impl Grid {
             sy,
             hlimit,
             scroll_pending: 0,
+            lines_pruned: 0,
         }
     }
 
@@ -437,6 +441,7 @@ impl Grid {
             // Reuse a discarded history line if available, avoiding allocation
             let new_line = if self.hsize() >= self.hlimit {
                 let mut recycled = self.lines.pop_front().expect("hsize >= hlimit > 0");
+                self.lines_pruned += 1;
                 recycled.clear_to(self.sx);
                 recycled
             } else {
@@ -656,6 +661,7 @@ impl Grid {
 
         while self.lines.len() > (self.sy + self.hlimit) as usize {
             self.lines.pop_front();
+            self.lines_pruned += 1;
         }
     }
 

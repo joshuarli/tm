@@ -891,11 +891,14 @@ fn execute_command(state: &mut State, cid: ClientId, input: &str) -> InputResult
 const SCROLL_LINES: u32 = 3;
 
 fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
-    let top = state
+    let (top, pruned_at) = state
         .panes
         .get(&pane_id)
-        .map(|p| p.active_screen().grid.hsize())
-        .unwrap_or(0);
+        .map(|p| {
+            let g = &p.active_screen().grid;
+            (g.hsize(), g.lines_pruned)
+        })
+        .unwrap_or((0, 0));
     if let Some(client) = state.clients.get_mut(&cid) {
         client
             .copy_modes
@@ -903,6 +906,7 @@ fn enter_copy_mode(state: &mut State, cid: ClientId, pane_id: PaneId) {
             .or_insert(crate::state::CopyState {
                 top,
                 scroll_deferred: 0,
+                pruned_at,
             });
     }
 }
@@ -938,11 +942,11 @@ pub fn flush_scroll(state: &mut State, cid: ClientId) -> bool {
     };
 
     // Collect panes that need flushing
-    let to_flush: Vec<(PaneId, u32, i32)> = client
+    let to_flush: Vec<(PaneId, u32, i32, u64)> = client
         .copy_modes
         .iter()
         .filter(|(_, cs)| cs.scroll_deferred != 0)
-        .map(|(&pid, cs)| (pid, cs.top, cs.scroll_deferred))
+        .map(|(&pid, cs)| (pid, cs.top, cs.scroll_deferred, cs.pruned_at))
         .collect();
 
     if to_flush.is_empty() {
@@ -950,19 +954,26 @@ pub fn flush_scroll(state: &mut State, cid: ClientId) -> bool {
     }
 
     let mut need_redraw = false;
-    for (pid, top, delta) in to_flush {
-        let hsize = state
+    for (pid, top, delta, pruned_at) in to_flush {
+        let (hsize, current_pruned) = state
             .panes
             .get(&pid)
-            .map(|p| p.active_screen().grid.hsize())
-            .unwrap_or(0);
+            .map(|p| {
+                let g = &p.active_screen().grid;
+                (g.hsize(), g.lines_pruned)
+            })
+            .unwrap_or((0, 0));
+
+        // Adjust top for lines pruned since it was last set
+        let drift = (current_pruned - pruned_at) as u32;
+        let adjusted_top = top.saturating_sub(drift);
 
         // Positive delta = scroll up (older lines = lower absolute row)
         // Negative delta = scroll down (newer lines = higher absolute row)
         let new_top = if delta > 0 {
-            top.saturating_sub(delta as u32)
+            adjusted_top.saturating_sub(delta as u32)
         } else {
-            top.saturating_add((-delta) as u32)
+            adjusted_top.saturating_add((-delta) as u32)
         };
 
         if new_top >= hsize {
@@ -971,6 +982,7 @@ pub fn flush_scroll(state: &mut State, cid: ClientId) -> bool {
             && let Some(cs) = client.copy_modes.get_mut(&pid)
         {
             cs.top = new_top;
+            cs.pruned_at = current_pruned;
             cs.scroll_deferred = 0;
         }
         need_redraw = true;

@@ -331,6 +331,9 @@ pub struct BorderDrag {
 pub struct CopyState {
     pub top: u32,
     pub scroll_deferred: i32,
+    /// Value of grid.lines_pruned when `top` was last set.
+    /// Used to adjust `top` as old history lines are discarded.
+    pub pruned_at: u64,
 }
 
 pub struct Client {
