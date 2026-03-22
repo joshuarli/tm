@@ -998,10 +998,27 @@ fn process_copy_input(
     event: InputEvent,
 ) -> InputResult {
     match event {
-        InputEvent::Key(_) => {
-            exit_copy_mode(state, cid, pid);
-            InputResult::Redraw
-        }
+        InputEvent::Key(key) => match key.base() {
+            KeyCode::ESCAPE | KeyCode::BACKSPACE => {
+                exit_copy_mode(state, cid, pid);
+                InputResult::Redraw
+            }
+            b if b == b'q' as u32 && !key.has_ctrl() && !key.has_meta() => {
+                exit_copy_mode(state, cid, pid);
+                InputResult::Redraw
+            }
+            KeyCode::UP => copy_scroll(state, cid, pid, 1),
+            KeyCode::DOWN => copy_scroll(state, cid, pid, -1),
+            KeyCode::PAGEUP => {
+                let page = state.panes.get(&pid).map_or(24, |p| p.sy);
+                copy_scroll(state, cid, pid, page as i32)
+            }
+            KeyCode::PAGEDOWN => {
+                let page = state.panes.get(&pid).map_or(24, |p| p.sy);
+                copy_scroll(state, cid, pid, -(page as i32))
+            }
+            _ => InputResult::None,
+        },
         InputEvent::Mouse(MouseEvent::WheelUp { .. }) => {
             copy_scroll(state, cid, pid, SCROLL_LINES as i32)
         }
