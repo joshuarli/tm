@@ -292,6 +292,12 @@ fn run_server_inner(initial_client_fd: Option<RawFd>) -> Result<()> {
             return Ok(());
         }
 
+        // Flush pending PTY writes (paste data that couldn't be written in one shot)
+        let has_pending = flush_pane_writes(&mut state);
+        if has_pending {
+            needs_render = true; // keep the tick running so we retry quickly
+        }
+
         // Flush deferred scroll deltas (coalesced over 16ms)
         let client_ids_for_scroll: Vec<ClientId> = state.clients.keys().copied().collect();
         for cid in client_ids_for_scroll {
@@ -691,8 +697,8 @@ fn apply_result(
     match result {
         InputResult::None => {}
         InputResult::PtyWrite(pid, data) => {
-            if let Some(pane) = state.panes.get(&pid) {
-                let _ = sys::write_all_fd(pane.pty_master, &data);
+            if let Some(pane) = state.panes.get_mut(&pid) {
+                pane.pending_write.extend_from_slice(&data);
             }
         }
         InputResult::Detach => {
@@ -828,6 +834,29 @@ fn handle_kill(state: &mut State, cid: ClientId, msg: &Message) {
     }
 
     send_to_client(state, cid, &Message::empty(protocol::MSG_EXIT));
+}
+
+/// Flush pending write buffers for all panes. Returns true if any pane still has data pending.
+fn flush_pane_writes(state: &mut State) -> bool {
+    let mut any_pending = false;
+    for pane in state.panes.values_mut() {
+        if pane.pending_write.is_empty() {
+            continue;
+        }
+        match sys::write_all_fd(pane.pty_master, &pane.pending_write) {
+            Ok(n) if n >= pane.pending_write.len() => {
+                pane.pending_write.clear();
+            }
+            Ok(n) => {
+                pane.pending_write.drain(..n);
+                any_pending = true;
+            }
+            Err(_) => {
+                any_pending = true;
+            }
+        }
+    }
+    any_pending
 }
 
 fn handle_pane_data(

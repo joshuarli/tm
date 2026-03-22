@@ -208,6 +208,7 @@ pub struct Pane {
     pub cwd: Option<String>,
     pub window: WindowId,
     pub using_alt: bool,
+    pub pending_write: Vec<u8>,
 }
 
 impl Pane {
@@ -227,6 +228,7 @@ impl Pane {
             cwd: None,
             window: WindowId(0),
             using_alt: false,
+            pending_write: Vec::new(),
         }
     }
 
